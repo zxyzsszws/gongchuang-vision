@@ -67,7 +67,50 @@ def test_heading_correction_is_added_not_subtracted():
             assert struct.unpack("<hhhH", f.payload)[2] == int((1.0 * 12 - 11.0) * 10)
 
 
-def test_serlink_structural_and_serial_import_is_lazy():
+def test_negative_heading_reports_signed_value():
+    # 回归：dh01=-5 叠加后净航向 h=-5(0.1°)。旧实现 h % 36000 → 35995，
+    # 超出 int16 上界，struct.pack('<h') 直接抛 struct.error（轻微过修后为常态）。
+    # 冻结格式 <hhhH 不变，应改为有符号回绕到 [-18000,18000)。
+    m = MockMcu(drift_mm_per_m=0.0, drift_deg_per_m=0.0, pose_hz=10.0)
+    m.send(Frame(seq=1, cmd=CMD_CALIBRATE, payload=i16(0) + i16(0) + i16(-5)))
+    m.tick(0.1)  # 修复前此处 struct.error 崩溃
+    poses = [f for f in _drain(m) if f.cmd == CMD_POSE]
+    assert len(poses) == 1
+    assert struct.unpack("<hhhH", poses[0].payload)[2] == -5
+
+
+def test_int16_saturation_and_clamp_counter():
+    # x = odom*1000 + drift*odom 随里程线性增长，odom≈30 起必然越过 32767；
+    # 长仿真不得崩溃：打包时饱和钳位，并以公开计数器 out_of_range_clamps 记录。
+    m = MockMcu(drift_mm_per_m=100.0, drift_deg_per_m=0.0, pose_hz=10.0)
+    m._odometry = 33.0  # 本次 tick 推进到 34 → x = 34*1000 + 100*34 = 37400
+    m.tick(0.1)
+    poses = [f for f in _drain(m) if f.cmd == CMD_POSE]
+    assert len(poses) == 1
+    x, y, h01, odom = struct.unpack("<hhhH", poses[0].payload)
+    assert (odom, x) == (34, 32767)  # 饱和到 int16 上界
+    assert m.out_of_range_clamps == 1
+    # 负方向同样饱和（y 轴：真值偏移超界）
+    m2 = MockMcu(drift_mm_per_m=0.0, drift_deg_per_m=0.0, pose_hz=10.0)
+    m2.truth = (0.0, -50000.0)
+    m2.tick(0.1)
+    poses2 = [f for f in _drain(m2) if f.cmd == CMD_POSE]
+    assert struct.unpack("<hhhH", poses2[0].payload)[1] == -32768
+    assert m2.out_of_range_clamps == 1
+    # 未超界的普通 pack 不增加计数（前面的精确值测试隐式覆盖，这里显式断言）
+    m3 = MockMcu(drift_mm_per_m=0.0, drift_deg_per_m=0.0, pose_hz=10.0)
+    m3.tick(0.1)
+    assert m3.out_of_range_clamps == 0
+
+
+def _drain(m):
+    frames = []
+    while (f := m.poll()) is not None:
+        frames.append(f)
+    return frames
+
+
+def test_seriallink_structural_and_serial_import_is_lazy():
     import src.devices.link as link
 
     assert hasattr(link, "SerialLink")

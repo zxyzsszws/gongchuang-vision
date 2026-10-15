@@ -22,6 +22,15 @@ class McuLink(Protocol):
     def tick(self, now: float) -> None: ...
 
 
+def _clamp_i16(v: int):
+    """int16 饱和钳位，返回 (钳位后值, 是否发生钳位)。"""
+    if v < -32768:
+        return -32768, True
+    if v > 32767:
+        return 32767, True
+    return v, False
+
+
 class MockMcu:
     """漂移模型：推算位姿 = 真值 + drift_per_m * 里程（修正量叠加后可靠近真值）。"""
 
@@ -36,6 +45,8 @@ class MockMcu:
         self._bias_x = self._bias_y = self._bias_h = 0.0
         self._ack_seq = 0
         self.truth = (0.0, 0.0)
+        # 打包时触发 int16 饱和钳位的帧计数（长仿真可观测/可断言）
+        self.out_of_range_clamps = 0
 
     def send(self, frame):
         for acked in self._rx.feed(encode(frame)):
@@ -54,12 +65,19 @@ class MockMcu:
         if self._last_pose_t is None or (now - self._last_pose_t) >= 1.0 / self.pose_hz:
             self._last_pose_t = now
             self._odometry += 1.0  # 每上报周期推进 1m，模拟行进
-            x = int(self._odometry * 1000 + self.drift_mm_per_m * self._odometry + self._bias_x)
-            y = int(self.truth[1] + self._bias_y)
-            h = int((self.drift_deg_per_m * self._odometry + self._bias_h) * 10)
+            x, clamped_x = _clamp_i16(
+                int(self._odometry * 1000 + self.drift_mm_per_m * self._odometry + self._bias_x))
+            y, clamped_y = _clamp_i16(int(self.truth[1] + self._bias_y))
+            # 航向回绕到有符号区间 [-18000, 18000)：Python 的 % 恒非负，
+            # 负净航向会被映射到 [1,35999]，≥32768 时 struct '<h' 直接抛
+            # struct.error（轻微过修后为常态）。格式 <hhhH 由规格冻结，不改布局。
+            h = ((int((self.drift_deg_per_m * self._odometry + self._bias_h) * 10)
+                  + 18000) % 36000) - 18000
+            if clamped_x or clamped_y:
+                self.out_of_range_clamps += 1  # 每个被钳位的 pack 计一次
             with self._lock:
                 self._tx.append(Frame(seq=0, cmd=CMD_POSE,
-                                      payload=struct.pack("<hhhH", x, y, h % 36000,
+                                      payload=struct.pack("<hhhH", x, y, h,
                                                           int(self._odometry) & 0xFFFF)))
 
     def poll(self):
