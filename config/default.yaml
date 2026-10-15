@@ -9,6 +9,10 @@ color: {min_area: 800, hsv_table: {1: [[0,120,80],[10,255,255]], 2: [[11,120,80]
 ring:
   geo: [{r_min: 30, r_max: 45, label: 1}, {r_min: 50, r_max: 65, label: 2}, {r_min: 70, r_max: 85, label: 3}]
   hough: {param1: 120, param2: 30}
+  # 三色环分组（detect_tri_ring）参数，live/replay 感知用；缺省值与 Task 8 定标一致。
+  spacing_min_mm: 120
+  spacing_max_mm: 200
+  collinear_tol_deg: 5
 field_file: config/field.example.yaml
 # make_camera 工厂输入（Task 9）：replay 指向视频文件或图片目录；sim 供 ImageFolder 循环回放
 replay_path: tests/fixtures/imgs
