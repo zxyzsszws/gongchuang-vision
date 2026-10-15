@@ -27,3 +27,9 @@ class TaskPlan:
     batch1_positions: tuple
     batch2_colors: tuple
     batch2_positions: tuple
+
+@dataclass(frozen=True)
+class Blob:
+    center: tuple
+    area: float
+    color: int
