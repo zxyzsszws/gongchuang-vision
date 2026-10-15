@@ -6,12 +6,19 @@ MockMcu 语义：
   使上报值靠近真值（规格「修正量，主控叠加到其推算」）。
 - tick(now) 按 pose_hz 产出 CMD_POSE（payload `<hhhH`: x, y, heading01, odometry），
   上报位姿 = 真值 + 漂移×里程 + 已应用的修正量；每上报一次里程 +1m。
+- 收到 CMD_GOTO/CMD_PICK/CMD_PLACE 视为接受动作：**延迟 1 个 tick** 回
+  CMD_DONE(task_id)，并在触发 DONE 时推进 `_odometry`（动作行进的里程增量）。
 """
 import struct
 import threading
 from typing import Optional, Protocol
 
-from ..core.protocol import CMD_ACK, CMD_CALIBRATE, CMD_POSE, Frame, StreamDecoder, encode
+from ..core.protocol import (CMD_ACK, CMD_CALIBRATE, CMD_DONE, CMD_GOTO,
+                             CMD_PICK, CMD_PLACE, CMD_POSE, Frame,
+                             StreamDecoder, encode)
+
+# 触发“延迟 1 tick DONE”主控动作类命令
+_ACTION_CMDS = (CMD_GOTO, CMD_PICK, CMD_PLACE)
 
 
 class McuLink(Protocol):
@@ -47,6 +54,9 @@ class MockMcu:
         self.truth = (0.0, 0.0)
         # 打包时触发 int16 饱和钳位的帧计数（长仿真可观测/可断言）
         self.out_of_range_clamps = 0
+        # 动作命令 → 延迟 1 tick 的 CMD_DONE 队列（task_id, 剩余 tick 数）
+        self._pending_done = []
+        self._task_id = 0
 
     def send(self, frame):
         for acked in self._rx.feed(encode(frame)):
@@ -60,8 +70,30 @@ class MockMcu:
                     self._bias_x += dx
                     self._bias_y += dy
                     self._bias_h += dh01 / 10.0
+                if acked.cmd in _ACTION_CMDS:
+                    # 接受动作：下一个 tick 触发 DONE（单线程驱动约定）
+                    self._task_id = (self._task_id + 1) & 0xFF
+                    self._pending_done.append([self._task_id, 1])
+
+    def _fire_due_done(self):
+        """弹出到期 pending，推进里程并产出 CMD_DONE(task_id)。持锁调用。"""
+        still, fired = [], []
+        for item in self._pending_done:
+            item[1] -= 1
+            if item[1] <= 0:
+                fired.append(item[0])
+            else:
+                still.append(item)
+        self._pending_done = still
+        for task_id in fired:
+            self._odometry += 1.0  # 动作执行亦产里程（GOTO/PLACE 行进）
+            self._tx.append(Frame(seq=0, cmd=CMD_DONE,
+                                  payload=bytes([task_id])))
 
     def tick(self, now):
+        with self._lock:
+            if self._pending_done:
+                self._fire_due_done()
         if self._last_pose_t is None or (now - self._last_pose_t) >= 1.0 / self.pose_hz:
             self._last_pose_t = now
             self._odometry += 1.0  # 每上报周期推进 1m，模拟行进
