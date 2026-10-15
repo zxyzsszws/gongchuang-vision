@@ -14,6 +14,7 @@ ring:
   spacing_max_mm: 200
   collinear_tol_deg: 5
 field_file: config/field.example.yaml
+log_dir: logs
 # make_camera 工厂输入（Task 9）：replay 指向视频文件或图片目录；sim 供 ImageFolder 循环回放
 replay_path: tests/fixtures/imgs
 sim_images: tests/fixtures/imgs

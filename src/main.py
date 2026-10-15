@@ -15,6 +15,7 @@ from .core.fsm import MatchFSM
 from .core.kalman import PoseFilter
 from .devices.link import MockMcu, SerialLink
 from .devices.sim_scene import SimScene
+from .logsetup import setup_logging
 
 
 def _make_vision_perceive(cam, cfg):
@@ -85,7 +86,9 @@ def main(argv=None):
                     help="缺省读配置 mode 键")
     ap.add_argument("--max-seconds", type=float, default=120.0)
     args = ap.parse_args(argv)
-    mode = args.mode or load_config(args.config).get("mode", "sim")
+    cfg = load_config(args.config)
+    setup_logging(cfg.get("log_dir", "logs"))  # 结构化 JSONL 运行日志（复盘用）
+    mode = args.mode or cfg.get("mode", "sim")
     fsm = run(args.config, mode, max_seconds=args.max_seconds)
     for e in fsm.log_events:  # 状态迁移与关键事件日志（Task 13 将替换为结构化日志）
         print(e)
