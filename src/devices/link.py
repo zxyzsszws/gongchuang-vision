@@ -1,0 +1,93 @@
+"""McuLink 设备层：协议化串口链路 + 带漂移推算模拟的 MockMcu。
+
+MockMcu 语义：
+- 收到任何帧都回 ACK（payload = 被确认帧的 seq）。
+- CMD_CALIBRATE payload `<hhh` 为修正量（fixed − last），**叠加**进推算位姿，
+  使上报值靠近真值（规格「修正量，主控叠加到其推算」）。
+- tick(now) 按 pose_hz 产出 CMD_POSE（payload `<hhhH`: x, y, heading01, odometry），
+  上报位姿 = 真值 + 漂移×里程 + 已应用的修正量；每上报一次里程 +1m。
+"""
+import struct
+import threading
+from typing import Optional, Protocol
+
+from ..core.protocol import CMD_ACK, CMD_CALIBRATE, CMD_POSE, Frame, StreamDecoder, encode
+
+
+class McuLink(Protocol):
+    def send(self, frame: Frame) -> None: ...
+
+    def poll(self) -> Optional[Frame]: ...
+
+    def tick(self, now: float) -> None: ...
+
+
+class MockMcu:
+    """漂移模型：推算位姿 = 真值 + drift_per_m * 里程（修正量叠加后可靠近真值）。"""
+
+    def __init__(self, drift_mm_per_m=20.0, drift_deg_per_m=0.1, pose_hz=10.0):
+        self.drift_mm_per_m = drift_mm_per_m
+        self.drift_deg_per_m = drift_deg_per_m
+        self.pose_hz = pose_hz
+        self._rx, self._tx = StreamDecoder(), []
+        self._lock = threading.Lock()
+        self._last_pose_t = None
+        self._odometry = 0.0
+        self._bias_x = self._bias_y = self._bias_h = 0.0
+        self._ack_seq = 0
+        self.truth = (0.0, 0.0)
+
+    def send(self, frame):
+        for acked in self._rx.feed(encode(frame)):
+            with self._lock:
+                self._ack_seq = (self._ack_seq + 1) & 0xFF
+                self._tx.append(Frame(seq=self._ack_seq, cmd=CMD_ACK,
+                                      payload=bytes([acked.seq])))
+                if acked.cmd == CMD_CALIBRATE:
+                    dx, dy, dh01 = struct.unpack("<hhh", acked.payload)
+                    # 修正量叠加到推算位姿（不是相减：那会把上报推离真值）
+                    self._bias_x += dx
+                    self._bias_y += dy
+                    self._bias_h += dh01 / 10.0
+
+    def tick(self, now):
+        if self._last_pose_t is None or (now - self._last_pose_t) >= 1.0 / self.pose_hz:
+            self._last_pose_t = now
+            self._odometry += 1.0  # 每上报周期推进 1m，模拟行进
+            x = int(self._odometry * 1000 + self.drift_mm_per_m * self._odometry + self._bias_x)
+            y = int(self.truth[1] + self._bias_y)
+            h = int((self.drift_deg_per_m * self._odometry + self._bias_h) * 10)
+            with self._lock:
+                self._tx.append(Frame(seq=0, cmd=CMD_POSE,
+                                      payload=struct.pack("<hhhH", x, y, h % 36000,
+                                                          int(self._odometry) & 0xFFFF)))
+
+    def poll(self):
+        with self._lock:
+            return self._tx.pop(0) if self._tx else None
+
+
+class SerialLink:
+    def __init__(self, port, baudrate=115200):
+        import serial  # 惰性导入：测试环境不打开端口
+        self._ser = serial.Serial(port, baudrate, timeout=0)
+        self._rx, self._tx = StreamDecoder(), []
+        self._lock = threading.Lock()
+
+    def send(self, frame):
+        with self._lock:
+            self._ser.write(encode(frame))
+
+    def poll(self):
+        self._rx_feed()
+        with self._lock:
+            return self._tx.pop(0) if self._tx else None
+
+    def _rx_feed(self):
+        data = self._ser.read(256)  # timeout=0 → 非阻塞
+        if data:
+            with self._lock:
+                self._tx.extend(self._rx.feed(data))
+
+    def tick(self, now):
+        pass
