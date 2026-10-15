@@ -1,0 +1,9 @@
+tri:
+  left:   {center: [500, 300], radius: 20}
+  middle: {center: [600, 300], radius: 20}
+  right:  {center: [700, 300], radius: 20}
+  base_angle_deg: 0.0
+rings:
+  - {center: [1200, 300], radius: 60, label: 1}
+  - {center: [1200, 600], radius: 60, label: 2}
+  - {center: [1200, 900], radius: 60, label: 3}
