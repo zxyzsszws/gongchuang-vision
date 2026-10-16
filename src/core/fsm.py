@@ -185,7 +185,7 @@ class MatchFSM:
             if self._send(cmd, payload, now):
                 self._sent = True
             return
-        if now - self.entered_at > self.cfg["timing"].get("nav_timeout_s", 8.0):
+        if now - self.entered_at > self.cfg["timing"]["nav_timeout_s"]:
             self._retries += 1
             if self._retries > self.cfg["calib"]["retry"]:
                 self.log_events.append(("ACTION_TIMEOUT", cmd, now))
@@ -261,7 +261,7 @@ class MatchFSM:
                 self._goto(nxt, now)
                 return
             self._retries += 1  # 残差超限判误匹配，计一次失败
-        if now - self.entered_at > self.cfg["timing"].get("cal_timeout_s", 6.0):
+        if now - self.entered_at > self.cfg["timing"]["cal_timeout_s"]:
             self._retries += 1
             self.entered_at = now  # 重开窗口，每 6s 计一次
         if self._retries > self.cfg["calib"]["retry"]:
