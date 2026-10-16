@@ -1,7 +1,9 @@
+# 三色环理论环心：相邻间距 150mm，须落在 ring.spacing_min/max_mm (120..200) 分组闸内
+# （final-review F6：原 500/600/700 间距 100 永远过不了 detect_tri_ring 的间距门）。
 tri:
-  left:   {center: [500, 300], radius: 20}
+  left:   {center: [450, 300], radius: 20}
   middle: {center: [600, 300], radius: 20}
-  right:  {center: [700, 300], radius: 20}
+  right:  {center: [750, 300], radius: 20}
   base_angle_deg: 0.0
 rings:
   - {center: [1200, 300], radius: 60, label: 1}

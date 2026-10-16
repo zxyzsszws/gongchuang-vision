@@ -63,8 +63,13 @@ def run(cfg_path, mode, max_seconds=120.0):
     cfg = load_config(cfg_path)
     field = load_field_map(cfg_get(cfg, "field_file"))
     if mode == "sim":
-        link = MockMcu(drift_mm_per_m=20.0, drift_deg_per_m=0.1, pose_hz=10.0)
-        perceive = SimScene(field)
+        # 漂移模型参数走 config（sim 节，缺省=评审定标的 20mm/m+0.1°/m 保守值）；
+        # SimScene 持只读 link 引用，按当前位姿误差合成 field-as-seen（F5 闭环）。
+        sim_cfg = cfg.get("sim") or {}
+        link = MockMcu(drift_mm_per_m=sim_cfg.get("drift_mm_per_m", 20.0),
+                       drift_deg_per_m=sim_cfg.get("drift_deg_per_m", 0.1),
+                       pose_hz=sim_cfg.get("pose_hz", 10.0))
+        perceive = SimScene(field, link=link)
     else:
         from .devices.camera import make_camera
         cam = make_camera(cfg, mode)
@@ -72,10 +77,18 @@ def run(cfg_path, mode, max_seconds=120.0):
         # live/replay: perceive 由相机帧驱动（每帧先 cam.read 再跑检测器）
         perceive = _make_vision_perceive(cam, cfg)
     fsm = MatchFSM(cfg, link, PoseFilter(), field, perceive)
-    t0 = time.monotonic()
-    while time.monotonic() - t0 < max_seconds and fsm.state not in ("DONE", "SAFESTOP"):
-        fsm.step(time.monotonic() - t0)
-        time.sleep(0.02)
+    if mode == "sim":
+        # 虚拟时钟：固定 dt 逐步驱动，无墙钟竞态 → e2e 完全确定性、可复现
+        # （spec §4 外层契约的 max_seconds 在此按仿真时间解释）。
+        now, dt = 0.0, 0.02
+        while now < max_seconds and fsm.state not in ("DONE", "SAFESTOP"):
+            fsm.step(now)
+            now += dt
+    else:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < max_seconds and fsm.state not in ("DONE", "SAFESTOP"):
+            fsm.step(time.monotonic() - t0)
+            time.sleep(0.02)
     return fsm
 
 

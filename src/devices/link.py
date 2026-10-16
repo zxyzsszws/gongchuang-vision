@@ -54,6 +54,8 @@ class MockMcu:
         self.truth = (0.0, 0.0)
         # 打包时触发 int16 饱和钳位的帧计数（长仿真可观测/可断言）
         self.out_of_range_clamps = 0
+        # 最近一次 POSE 快照（上报值/标称真值），供只读访问器 get_pose_report 使用
+        self._pose_snap = (0, 0, 0, 0.0, 0.0)  # reported_x, reported_y, head01, nominal_x, nominal_y
         # 动作命令 → 延迟 1 tick 的 CMD_DONE 队列（task_id, 剩余 tick 数）
         self._pending_done = []
         self._task_id = 0
@@ -105,6 +107,9 @@ class MockMcu:
             # struct.error（轻微过修后为常态）。格式 <hhhH 由规格冻结，不改布局。
             h = ((int((self.drift_deg_per_m * self._odometry + self._bias_h) * 10)
                   + 18000) % 36000) - 18000
+            # 记录本次上报快照（reported vs nominal 标称真值），供只读访问器取用；
+            # nominal 为纯里程位姿（odom×1000mm），不含漂移/修正。
+            self._pose_snap = (x, y, h, self._odometry * 1000.0, self.truth[1])
             if clamped_x or clamped_y:
                 self.out_of_range_clamps += 1  # 每个被钳位的 pack 计一次
             with self._lock:
@@ -115,6 +120,25 @@ class MockMcu:
     def poll(self):
         with self._lock:
             return self._tx.pop(0) if self._tx else None
+
+    def get_pose_report(self) -> dict:
+        """只读访问器（供 sim 场景按「当前位姿误差」合成 field-as-seen，不改任何模型行为）：
+
+        - reported_x/y/head01：最近一次 POSE 上报的 int16 值（含钳位）。
+        - nominal_x/y：模型标称真值（里程×1000mm / truth_y），不含漂移与修正。
+        - err_x_mm / err_y_mm / err_head_deg：实时「上报 − 标称」位姿误差
+          （= 标称漂移×里程 + 已叠加修正；bias 随 CALIBRATE 同步更新，立即可见）。
+        - odom：当前里程（m）。上报位姿 = nominal + err，场景侧据此合成观测。
+        """
+        rx, ry, rh01, nx, ny = self._pose_snap
+        return {
+            "reported_x": rx, "reported_y": ry, "reported_head01": rh01,
+            "nominal_x": nx, "nominal_y": ny,
+            "err_x_mm": self.drift_mm_per_m * self._odometry + self._bias_x,
+            "err_y_mm": self._bias_y,
+            "err_head_deg": self.drift_deg_per_m * self._odometry + self._bias_h,
+            "odom": self._odometry,
+        }
 
 
 class SerialLink:

@@ -24,7 +24,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-全部 45 项测试**无需任何硬件**：算法单测 + 校准精度回归（合成数据）+ 协议往返/粘包断包 + MockMcu 仿真端到端。`pytest.ini`/配置已设 `pythonpath=.`，在仓库根目录运行即可。
+全部 51 项测试**无需任何硬件**：算法单测 + 校准精度回归（合成数据）+ 协议往返/粘包断包 + MockMcu 仿真端到端（含校准闭环收敛断言）。`pytest.ini`/配置已设 `pythonpath=.`，在仓库根目录运行即可。
 
 ## 3. 三种运行模式
 
@@ -34,11 +34,13 @@ python -m src.main --config config/default.yaml --mode sim|replay|live [--max-se
 
 | 模式 | 链路 | 图像来源 | 需要的硬件 | 用途 |
 |---|---|---|---|---|
-| `sim` | MockMcu（内置 OPS 里程漂移 + 陀螺缓漂模型） | 合成感知（SimScene，基于 FieldMap 造观测） | **无** | 端到端跑通全流程状态机、验证校准闭环、CI |
+| `sim` | MockMcu（内置 OPS 里程漂移 + 陀螺缓漂模型，参数见 `sim` 配置节） | 合成感知（SimScene：FieldMap 理论环 × **当前主控位姿误差**刚体变换后的 field-as-seen + ±3mm 抖动） | **无** | 端到端跑通全流程状态机、验证校准闭环、CI |
 | `replay` | SerialLink 真实串口 | `replay_path` 指定的视频文件（.mp4/.avi）或图片目录 | 需串口可打开（连主控或先占位）；无需相机 | 现场实拍素材回放调试识别与校准 |
 | `live` | SerialLink 真实串口 | USBCamera（`camera.main_index`） | 相机 + 串口（主控） | 赛场实机运行与参数现调 |
 
 `sim` 模式零硬件即可完整比赛流程直到 `DONE`；`live`/`replay` 的串口参数见 `serial` 配置节。运行结束打印 FSM 状态迁移轨迹，退出码 0=DONE。
+
+导航目标是**真实的**：GOTO 坐标由二维码批次放置位置首位匹配 `field_file` 的 FieldMap 数字环心得出（无匹配环回退原点，RETURN 恒回起点 (0,0)）。`sim` 校准闭环为真闭环：SimScene 按 MockMcu「上报−标称」当前位姿误差合成观测，e2e 测试断言两次 CAL_APPLIED 的修正量达到漂移量级且应用后误差收缩过半、int16 钳位次数为 0（虚拟时钟驱动，完全确定可复现）。
 
 ## 4. 配置文件指南（`config/default.yaml`）
 
@@ -47,6 +49,7 @@ python -m src.main --config config/default.yaml --mode sim|replay|live [--max-se
 | `mode` | 缺省运行模式（命令行 `--mode` 优先） |
 | `camera` | `main_index` 主相机设备索引（live 用）、`qr_index`（预留）、`width/height/fps` |
 | `serial` | `port`（如 COM3）、`baudrate`（115200，与协议一致勿改） |
+| `sim` | sim 模式 MockMcu 漂移模型：`drift_mm_per_m` 里程漂移、`drift_deg_per_m` 航向缓漂（默认 8mm/m 使整场标称误差留在 int16 里程量程内） |
 | `timing` | 协议时序：`heartbeat_ms` 心跳周期、`heartbeat_timeout_s` 断链超时、`ack_timeout_ms`/`ack_retry` ACK 重发、`scan_timeout_s` 扫码超时（不可降级 → SAFESTOP） |
 | `calib` | 校准：`stable_frames` 防抖帧数 K、`retry` 重试上限、`max_residual_mm/deg` 残差阈值（超限判误匹配丢弃）、`weight_middle/weight_pair_mid` 中环/左右环中点加权 |
 | `color` | `min_area` 色块面积下限；`hsv_table` 1-6 号颜色的 HSV [下限,上限]（OpenCV H 范围 0-180）——**现场光照下必调** |
@@ -90,3 +93,9 @@ docs/              # protocol-v0.1.md（电控冻结文档）+ specs/ 设计文�
 ```
 
 两条硬性规则：算法层纯函数化（合成数据即可验证精度、不依赖真车）；MockMcu 是一等公民（电控代码就绪前即可跑通全链路，联调仅切换 `serial.port` 配置）。
+
+## 8. 已知限制（如实记录，联调/Phase-4 前必读）
+
+- **像素↔毫米共用一个抽象 2D 坐标系**：视觉检出（`detect_rings` 输出像素圆心）与 FieldMap 理论坐标（mm）当前直接同域比较，像素→毫米的单应矩阵/比例换算（homography）属 **Phase-4** 工作；`sim`/CI 路径不经过相机域，结论不受影响。`config/field.example.yaml` 已按 `ring.spacing_*_mm`(120–200) 分组闸修正三色环间距（450/600/750，间距 150）。
+- **相机读取为同步单线程**：live/replay 的 `CameraSource.read()` + 检测在 `fsm.step` 内联执行，未实现 spec §2.5 的相机线程→帧队列模型（控制端裁决：F7 有意推迟——线程化需真实相机才能验证，慢帧期间心跳/ACK 时序会顺延）。
+- **逐件精细放置偏移属 Phase-4**：PLACE 的 `fine_x/fine_y` 当前恒发 0，导航只用批次位置首位对应的环心（`docs/protocol-v0.1.md` §6.5）。

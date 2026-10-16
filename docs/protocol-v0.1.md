@@ -43,7 +43,7 @@ xor 覆盖范围：`len..payload`（不含帧头 `AA 55`、不含 xor 自身与�
 |---|---|---|---|---|
 | HEARTBEAT | `0x10` | 双向（视觉周期发） | 空 | 500ms 周期；任一侧 2s 无来流 → SAFESTOP |
 | TASK_PLAN | `0x11` | 视→控 | 12×1B：`b1色[3] b1位[3] b2色[3] b2位[3]` | 扫码结果，开赛只发一次。颜色 1-6，位置 1-3=环编号。**按批次分组排列**（见 §6.4） |
-| GOTO | `0x12` | 视→控 | `x,y:int16(mm) heading:int16(0.1°)` | 请求导航（绝对坐标） |
+| GOTO | `0x12` | 视→控 | `x,y:int16(mm) heading:int16(0.1°)` | 请求导航（绝对坐标）。x/y = **FieldMap 数字环心**：NAV1/NAV2 目标取 TASK_PLAN 对应批次放置位置首位编号匹配的环心，无匹配环回退原点；RETURN 回起点 `(0,0)`。heading 当前恒发 0 |
 | CALIBRATE | `0x13` | 视→控 | `dx,dy:int16(mm) dhead:int16(0.1°)` | **修正量**（非绝对坐标），主控叠加到其推算位姿 |
 | PLACE | `0x14` | 视→控 | `id:1B fine_x,fine_y:int16(mm)` | 放置请求 + 视觉微调量。当前 FSM 第一字节填**物料颜色号**（见 §6.5） |
 | PICK | `0x15` | 视→控 | `color:1B off_x,off_y:int16(mm)` | 取料请求 + 相对偏移。协议已定义，**当前 FSM 未外发**（预留，见 §6.6） |
@@ -78,6 +78,16 @@ aa 55 0d 02 12 b0 04 2c 01 c2 01 47 0d
 ```
 
 （`b0 04`=1200 LE，`2c 01`=300 LE，`c2 01`=450 LE）
+
+### GOTO 实例（seq=8：NAV 目标 = FieldMap 3 号环心 (1200,900)，heading 恒发 0）
+
+视觉侧当前真实外发的导航帧形态——目标点由 TASK_PLAN 批次位置首位匹配环心得出：
+
+```
+aa 55 0d 08 12 b0 04 84 03 00 00 24 0d
+```
+
+（`b0 04`=1200 LE，`84 03`=900 LE，`00 00`=0；`encode()` 实际输出）
 
 ### CALIBRATE（seq=3，dx=−12mm，dy=45mm，dhead=8.3°→83）
 
@@ -149,7 +159,7 @@ aa 55 0d 07 12 ff 7f 00 80 b0 b9 11 0d
 | ACK 重试上限 | 3 次失败 → SAFESTOP | `timing.ack_retry` |
 | POSE 上报频率 | 10Hz | `MockMcu(pose_hz=10)` 同模型 |
 
-心跳帧不占用 ACK 待确认槽位（发送方不依赖心跳的 ACK）；接收侧对任何帧（含心跳）均可回 ACK。
+心跳帧不占用 ACK 待确认槽位（发送方不依赖心跳的 ACK）；接收侧对任何帧（含心跳）均可回 ACK。发送侧**控制帧串行化**：上一条控制帧（TASK_PLAN/GOTO/CALIBRATE/PLACE）的 ACK 未解决（含重发预算未耗尽）之前不会发出下一条控制帧，预算耗尽仍无 ACK 则记 ACK_TIMEOUT 并 SAFESTOP；NAV/PLACE 超时重发每次重开完整超时窗口（RETRY(n) 语义，缺省 8s × 2 次重发）。
 
 ## 6. 已知限制与实现裁决（必读）
 
@@ -180,7 +190,7 @@ POSE 的里程字段 0..65535 m，超出后按 `& 0xFFFF` 回绕（赛场里程 
 
 ### 6.5 PLACE 第一字节语义
 
-规格写作 `ring_id`，当前 FSM 外发时填**批次物料颜色号**（`batch_colors[0]`，1-6），fine_x/fine_y 为视觉微调量。放置目标环编号已含在 TASK_PLAN 的位置字节中。若电控组需要 PLACE 携带独立 ring_id，请在联调前提出，改 `_s_PLACE1/2` 一处即可。
+规格写作 `ring_id`，当前 FSM 外发时填**该批次首个物料颜色号**（PLACE1=`batch1_colors[0]`、PLACE2=`batch2_colors[0]`，1-6，与二维码颜色组首位一致）。fine_x/fine_y 为视觉微调量字段，**当前恒发 0**（逐件精细放置偏移属 Phase-4）。放置目标环编号已含在 TASK_PLAN 的位置字节中。若电控组需要 PLACE 携带独立 ring_id，请在联调前提出，改 `_s_PLACE1/2` 一处即可。
 
 ### 6.6 PICK / STATE 当前未使用
 
