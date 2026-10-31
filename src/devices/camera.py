@@ -1,7 +1,14 @@
-"""相机源三实现：USB 摄像头 / 视频文件 / 图片序列目录 + 工厂。
+"""相机源：USB 摄像头 / 视频文件 / 图片序列目录 + 工厂。
 
 CameraSource 协议：read() -> (ok, frame|None)，与 cv2.VideoCapture.read() 同形，
-上层（Task 12 管道）无需关心具体来源。
+上层无需关心具体来源。
+
+双相机分工（与方案文档一致）：主摄（``camera.main_index``）负责环识别，
+扫码相机（``camera.qr_index``，花雀广角）专职扫码；``qr_index`` 缺省时扫码
+复用主摄（此前该配置项一直是死键，现在生效）。
+
+``MultiCamera`` 把主摄的 ``read()`` 与扫码相机的 ``qr_read()`` 合成一个对象，
+VisionPerceive 因此无需区分单/双相机。
 """
 import glob
 import os
@@ -56,9 +63,35 @@ class ImageFolder:
         return frame is not None, frame
 
 
+class MultiCamera:
+    """主摄 + 扫码相机：read() 走主摄，qr_read() 走扫码相机（缺省回落到主摄）。"""
+
+    def __init__(self, main, qr=None):
+        self._main, self._qr = main, qr
+
+    def read(self):
+        return self._main.read()
+
+    def qr_read(self):
+        if self._qr is None:
+            return self._main.read()
+        ok, frame = self._qr.read()
+        return (ok, frame) if ok and frame is not None else self._main.read()
+
+    def release(self):
+        self._main.release()
+        if self._qr is not None:
+            self._qr.release()
+
+
 def make_camera(cfg, mode):
     if mode == "live":
-        return USBCamera(cfg["camera"]["main_index"], cfg["camera"]["width"], cfg["camera"]["height"])
+        cam_cfg = cfg["camera"]
+        main = USBCamera(cam_cfg["main_index"], cam_cfg["width"], cam_cfg["height"])
+        qr_index = cam_cfg.get("qr_index")
+        if qr_index is None or qr_index == cam_cfg["main_index"]:
+            return main
+        return MultiCamera(main, USBCamera(qr_index, cam_cfg["width"], cam_cfg["height"]))
     if mode == "replay":
         path = cfg["replay_path"]
         return VideoFile(path) if path.endswith((".mp4", ".avi")) else ImageFolder(path)

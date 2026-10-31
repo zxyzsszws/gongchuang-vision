@@ -1,5 +1,11 @@
 mode: sim
-camera: {main_index: 0, qr_index: 1, width: 640, height: 480, fps: 30}
+camera:
+  main_index: 0          # 主摄（环识别）
+  qr_index: 1            # 扫码相机（花雀广角）；与 main_index 相同则复用主摄
+  qr_model_dir: ""       # WeChatQRCode 4 个模型所在目录；留空=OpenCV 内建缺省（辨识率低）
+  width: 640
+  height: 480
+  fps: 30
 serial: {port: COM3, baudrate: 115200}
 # sim 模式 MockMcu 漂移模型（mm/m 里程漂移、deg/m 航向缓漂）：
 # 8mm/m 使整场比赛标称误差保持在 int16 里程量程内（out_of_range_clamps==0 可断言）。
@@ -7,17 +13,24 @@ sim: {drift_mm_per_m: 8.0, drift_deg_per_m: 0.1}
 timing: {heartbeat_ms: 500, heartbeat_timeout_s: 2.0, ack_timeout_ms: 100, ack_retry: 3, scan_timeout_s: 15, nav_timeout_s: 8.0, cal_timeout_s: 6.0}
 calib: {stable_frames: 5, retry: 2, max_residual_mm: 15, max_residual_deg: 3, weight_middle: 0.7, weight_pair_mid: 0.3}
 color: {min_area: 800, hsv_table: {1: [[0,120,80],[10,255,255]], 2: [[11,120,80],[25,255,255]], 3: [[100,120,80],[124,255,255]], 4: [[36,120,80],[77,255,255]], 5: [[0,0,0],[180,255,80]], 6: [[78,120,80],[99,255,255]]}}
-# ring.hough: 霍夫圆环阈值（现场可调）。param2 减小 → 更灵敏、伪检增多；
-# param1 为 Canny 高阈值；与 detect_rings() 默认值 (120/30) 保持一致。
+# 相机外参（像素 → 车体毫米）：live/replay 必填，缺则拒绝启动。
+# 生成：python tools/calibrate_camera.py --px ... --mm ... --out config/camera_calib.yaml
+camera_calib_file: config/camera_calib.example.yaml
+# ring.geo: 数字环半径带 → 环编号（数字环 1/2/3 半径各不相同，这是编号的物理依据）
+# ring.search_radius: 霍夫搜索半径范围（像素），须覆盖三色环与数字环两者。
+# ring.hough: param1=Canny 高阈值；param2 减小 → 更灵敏、伪检增多。
 ring:
   geo: [{r_min: 30, r_max: 45, label: 1}, {r_min: 50, r_max: 65, label: 2}, {r_min: 70, r_max: 85, label: 3}]
   hough: {param1: 120, param2: 30}
-  # 三色环分组（detect_tri_ring）参数，live/replay 感知用；缺省值与 Task 8 定标一致。
-  spacing_min_mm: 120
-  spacing_max_mm: 200
+  search_radius: [21, 110]
+  # 三色环分组门限（**像素**域判定，现场对着实拍画面标定）：
+  spacing_px_min: 120
+  spacing_px_max: 200
   collinear_tol_deg: 5
+  max_spacing_ratio: 2.0   # 两侧间距比上限，挡住远近环被误凑成一联
+  radius_tol: 0.25         # 三色环等尺寸判据（数字环半径各异，天然排除）
 field_file: config/field.example.yaml
 log_dir: logs
-# make_camera 工厂输入（Task 9）：replay 指向视频文件或图片目录；sim 供 ImageFolder 循环回放
+# make_camera 工厂输入：replay 指向视频文件或图片目录；sim 供 ImageFolder 循环回放
 replay_path: tests/fixtures/imgs
 sim_images: tests/fixtures/imgs

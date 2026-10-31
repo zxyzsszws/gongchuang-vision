@@ -14,6 +14,9 @@ class RingObs:
     center: tuple
     radius: float
     label: int | None = None
+    # 环的种类："tri"=三色环（校准用）、"digit"=数字环（放置位置用）、None=未标注。
+    # 由 detect_rings 按配置的半径带打标；标定/校准只认 "tri"，避免两类环串味。
+    kind: str | None = None
 
 @dataclass(frozen=True)
 class TriRingObs:
