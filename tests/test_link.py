@@ -11,9 +11,9 @@ def i16(v):
 
 def test_ack_on_every_frame():
     m = MockMcu(drift_mm_per_m=0.0, drift_deg_per_m=0.0, pose_hz=10.0)
-    m.send(Frame(seq=3, cmd=CMD_GOTO, data=b"\x00" * 6))
+    m.send(Frame(seq=3, cmd_id=CMD_GOTO, data=b"\x00" * 6))
     acks = m.poll(), m.poll()
-    assert any(f and f.cmd == CMD_ACK and f.data == b"\x03" for f in acks)
+    assert any(f and f.cmd_id == CMD_ACK and f.data == b"\x03" for f in acks)
 
 
 def test_pose_stream_and_calibration_effect():
@@ -25,7 +25,7 @@ def test_pose_stream_and_calibration_effect():
     m.tick(0.1)
     poses = []
     while (f := m.poll()) is not None:
-        if f.cmd == CMD_POSE:
+        if f.cmd_id == CMD_POSE:
             poses.append(f)
     assert len(poses) == 1
     x, y, h01, odom = struct.unpack("<hhhH", poses[0].data)
@@ -34,14 +34,14 @@ def test_pose_stream_and_calibration_effect():
     err_before = x - odom * 1000  # +1100mm
 
     # 视觉侧下发修正量 (fixed−last) = −1100mm，主控应“叠加”使上报靠近真值
-    m.send(Frame(seq=1, cmd=CMD_CALIBRATE, data=i16(-1100) + i16(0) + i16(0)))
+    m.send(Frame(seq=1, cmd_id=CMD_CALIBRATE, data=i16(-1100) + i16(0) + i16(0)))
     m.tick(0.2)
     drained = []
     while (f := m.poll()) is not None:
         drained.append(f)
-    acks = [f for f in drained if f.cmd == CMD_ACK]
+    acks = [f for f in drained if f.cmd_id == CMD_ACK]
     assert len(acks) == 1 and acks[0].data == b"\x01"
-    corrected = [f for f in drained if f.cmd == CMD_POSE]
+    corrected = [f for f in drained if f.cmd_id == CMD_POSE]
     assert len(corrected) == 1
     cx, _, _, codom = struct.unpack("<hhhH", corrected[0].data)
     assert codom == 12
@@ -57,13 +57,13 @@ def test_heading_correction_is_added_not_subtracted():
     m._odometry = 10.0
     m.tick(0.1)
     while (f := m.poll()) is not None:
-        if f.cmd == CMD_POSE:
+        if f.cmd_id == CMD_POSE:
             assert struct.unpack("<hhhH", f.data)[2] == int(1.0 * 11 * 10)
     # 修正 −11.0° (dh01=−110) 叠加后: odom=12 → (12.0 − 11.0)*10 = 10
-    m.send(Frame(seq=2, cmd=CMD_CALIBRATE, data=i16(0) + i16(0) + i16(-110)))
+    m.send(Frame(seq=2, cmd_id=CMD_CALIBRATE, data=i16(0) + i16(0) + i16(-110)))
     m.tick(0.2)
     while (f := m.poll()) is not None:
-        if f.cmd == CMD_POSE:
+        if f.cmd_id == CMD_POSE:
             assert struct.unpack("<hhhH", f.data)[2] == int((1.0 * 12 - 11.0) * 10)
 
 
@@ -72,9 +72,9 @@ def test_negative_heading_reports_signed_value():
     # 超出 int16 上界，struct.pack('<h') 直接抛 struct.error（轻微过修后为常态）。
     # 冻结格式 <hhhH 不变，应改为有符号回绕到 [-18000,18000)。
     m = MockMcu(drift_mm_per_m=0.0, drift_deg_per_m=0.0, pose_hz=10.0)
-    m.send(Frame(seq=1, cmd=CMD_CALIBRATE, data=i16(0) + i16(0) + i16(-5)))
+    m.send(Frame(seq=1, cmd_id=CMD_CALIBRATE, data=i16(0) + i16(0) + i16(-5)))
     m.tick(0.1)  # 修复前此处 struct.error 崩溃
-    poses = [f for f in _drain(m) if f.cmd == CMD_POSE]
+    poses = [f for f in _drain(m) if f.cmd_id == CMD_POSE]
     assert len(poses) == 1
     assert struct.unpack("<hhhH", poses[0].data)[2] == -5
 
@@ -85,7 +85,7 @@ def test_int16_saturation_and_clamp_counter():
     m = MockMcu(drift_mm_per_m=100.0, drift_deg_per_m=0.0, pose_hz=10.0)
     m._odometry = 33.0  # 本次 tick 推进到 34 → x = 34*1000 + 100*34 = 37400
     m.tick(0.1)
-    poses = [f for f in _drain(m) if f.cmd == CMD_POSE]
+    poses = [f for f in _drain(m) if f.cmd_id == CMD_POSE]
     assert len(poses) == 1
     x, y, h01, odom = struct.unpack("<hhhH", poses[0].data)
     assert (odom, x) == (34, 32767)  # 饱和到 int16 上界
@@ -94,7 +94,7 @@ def test_int16_saturation_and_clamp_counter():
     m2 = MockMcu(drift_mm_per_m=0.0, drift_deg_per_m=0.0, pose_hz=10.0)
     m2.truth = (0.0, -50000.0)
     m2.tick(0.1)
-    poses2 = [f for f in _drain(m2) if f.cmd == CMD_POSE]
+    poses2 = [f for f in _drain(m2) if f.cmd_id == CMD_POSE]
     assert struct.unpack("<hhhH", poses2[0].data)[1] == -32768
     assert m2.out_of_range_clamps == 1
     # 未超界的普通 pack 不增加计数（前面的精确值测试隐式覆盖，这里显式断言）
@@ -106,12 +106,12 @@ def test_int16_saturation_and_clamp_counter():
 def test_calibrate_with_bad_length_is_ignored():
     # 校验通过但 data 长度不符（主控实现 bug / 版本不一致）不得崩，只忽略该帧
     m = MockMcu(drift_mm_per_m=0.0, drift_deg_per_m=0.0, pose_hz=10.0)
-    m.send(Frame(seq=1, cmd=CMD_CALIBRATE, data=i16(100)))   # 只有 2 字节
-    m.send(Frame(seq=2, cmd=CMD_CALIBRATE, data=i16(0) + i16(0) + i16(-5)))
-    poses = [f for f in _drain(m) if f.cmd == CMD_POSE]
+    m.send(Frame(seq=1, cmd_id=CMD_CALIBRATE, data=i16(100)))   # 只有 2 字节
+    m.send(Frame(seq=2, cmd_id=CMD_CALIBRATE, data=i16(0) + i16(0) + i16(-5)))
+    poses = [f for f in _drain(m) if f.cmd_id == CMD_POSE]
     assert poses == []            # 还没 tick，先确认没提前产帧
     m.tick(0.1)
-    poses = [f for f in _drain(m) if f.cmd == CMD_POSE]
+    poses = [f for f in _drain(m) if f.cmd_id == CMD_POSE]
     assert len(poses) == 1
     # 第二条（合法）生效：航向 −5；若第一条被误解析成修正会明显不同
     assert struct.unpack("<hhhH", poses[0].data)[2] == -5

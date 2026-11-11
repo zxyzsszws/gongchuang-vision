@@ -1,6 +1,6 @@
 """McuLink 设备层：协议化串口链路 + 带漂移推算模拟的 MockMcu。
 
-帧格式见 `docs/protocol-v0.2.md`（0xA5 帧头 + 2 字节 cmd_id + CRC16 整包校验）。
+帧格式见 `docs/protocol-v1.0.0.md`（0xA5 帧头 + 2 字节 cmd_id + CRC16 整包校验）。
 
 MockMcu 语义：
 - 收到任何帧都回 ACK（data = 被确认帧的 seq）。
@@ -66,9 +66,9 @@ class MockMcu:
         for acked in self._rx.feed(encode(frame)):
             with self._lock:
                 self._ack_seq = (self._ack_seq + 1) & 0xFF
-                self._tx.append(Frame(seq=self._ack_seq, cmd=CMD_ACK,
+                self._tx.append(Frame(seq=self._ack_seq, cmd_id=CMD_ACK,
                                       data=bytes([acked.seq])))
-                if acked.cmd == CMD_CALIBRATE:
+                if acked.cmd_id == CMD_CALIBRATE:
                     if len(acked.data) != 6:      # 防御：长度不符不崩，仅忽略
                         continue
                     dx, dy, dh01 = struct.unpack("<hhh", acked.data)
@@ -76,7 +76,7 @@ class MockMcu:
                     self._bias_x += dx
                     self._bias_y += dy
                     self._bias_h += dh01 / 10.0
-                if acked.cmd in _ACTION_CMDS:
+                if acked.cmd_id in _ACTION_CMDS:
                     # 接受动作：下一个 tick 触发 DONE（单线程驱动约定）
                     self._task_id = (self._task_id + 1) & 0xFF
                     self._pending_done.append([self._task_id, 1])
@@ -93,7 +93,7 @@ class MockMcu:
         self._pending_done = still
         for task_id in fired:
             self._odometry += 1.0  # 动作执行亦产里程（GOTO/PLACE 行进）
-            self._tx.append(Frame(seq=0, cmd=CMD_DONE,
+            self._tx.append(Frame(seq=0, cmd_id=CMD_DONE,
                                   data=bytes([task_id])))
 
     def tick(self, now):
@@ -117,7 +117,7 @@ class MockMcu:
             if clamped_x or clamped_y:
                 self.out_of_range_clamps += 1  # 每个被钳位的 pack 计一次
             with self._lock:
-                self._tx.append(Frame(seq=0, cmd=CMD_POSE,
+                self._tx.append(Frame(seq=0, cmd_id=CMD_POSE,
                                       data=struct.pack("<hhhH", x, y, h,
                                                        int(self._odometry) & 0xFFFF)))
 

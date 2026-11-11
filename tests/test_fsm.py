@@ -93,7 +93,7 @@ def test_link_timeout_safestop():
             break
     assert fsm.state == "SAFESTOP"
     assert any(e[0] == "LINK_TIMEOUT" for e in fsm.log_events)
-    assert any(f.cmd == CMD_HEARTBEAT for f in dead.sent)  # 心跳确实在发
+    assert any(f.cmd_id == CMD_HEARTBEAT for f in dead.sent)  # 心跳确实在发
 
 
 # ---------- 最终评审修复波（F1–F4）：注入式链路 + 回归测试 ----------
@@ -111,9 +111,9 @@ class _FakeLink:
     def send(self, frame):
         self.sent.append(frame)
         if self._ack:
-            self.rx.append(Frame(seq=9, cmd=CMD_ACK, data=bytes([frame.seq])))
-        if frame.cmd in self._done_on:
-            self.rx.append(Frame(seq=0, cmd=CMD_DONE, data=bytes([frame.seq & 0xFF])))
+            self.rx.append(Frame(seq=9, cmd_id=CMD_ACK, data=bytes([frame.seq])))
+        if frame.cmd_id in self._done_on:
+            self.rx.append(Frame(seq=0, cmd_id=CMD_DONE, data=bytes([frame.seq & 0xFF])))
 
     def poll(self):
         return self.rx.pop(0) if self.rx else None
@@ -142,7 +142,7 @@ def test_retry_resets_action_timeout_window():
         fsm.step(t)
     timeouts = [e for e in fsm.log_events if e[0] == "ACTION_TIMEOUT"]
     assert fsm.state == "SAFESTOP" and len(timeouts) == 1
-    goto_cmds = [f.cmd for f in link.sent if f.cmd == CMD_GOTO]
+    goto_cmds = [f.cmd_id for f in link.sent if f.cmd_id == CMD_GOTO]
     # 首发 + calib.retry(=2) 次重发，全部真实落在各自窗口末尾
     assert len(goto_cmds) == 3
     assert timeouts[0][2] >= nav_timeout * (len(goto_cmds) - 1) + nav_timeout - 0.5
@@ -162,17 +162,17 @@ def test_ack_gate_holds_control_frames_until_resolved():
             break
     assert any(e[0] == "ACK_TIMEOUT" for e in fsm.log_events)
     assert fsm.state == "SAFESTOP"
-    sent_cmds = [f.cmd for f in link.sent]
+    sent_cmds = [f.cmd_id for f in link.sent]
     assert CMD_TASK_PLAN in sent_cmds                      # 第一条控制帧已发出并重发
     assert sent_cmds.count(CMD_TASK_PLAN) == 3             # 100ms × 3 次重发预算
     assert CMD_GOTO not in sent_cmds                       # 未解决前第二条控制帧被闸住
-    assert any(f.cmd == CMD_HEARTBEAT for f in link.sent)  # 心跳不受闸
+    assert any(f.cmd_id == CMD_HEARTBEAT for f in link.sent)  # 心跳不受闸
 
 
 def test_bad_pose_length_does_not_crash_fsm():
     # 校验通过但 POSE data 长度不符：记录事件、丢弃该帧、状态机继续跑
     link = _FakeLink(ack=True, done_on=(CMD_GOTO, CMD_PLACE))
-    link.rx.insert(0, Frame(seq=0, cmd=CMD_POSE, data=b"\x01\x02\x03"))
+    link.rx.insert(0, Frame(seq=0, cmd_id=CMD_POSE, data=b"\x01\x02\x03"))
     fsm = _fsm_on(link)
     t = 0.0
     for _ in range(10):
@@ -195,11 +195,11 @@ def test_nav_and_place_data_use_plan_targets():
         if fsm.state in ("DONE", "SAFESTOP"):
             break
     assert fsm.state == "DONE"
-    gotos = [struct.unpack("<hhh", f.data) for f in link.sent if f.cmd == CMD_GOTO]
+    gotos = [struct.unpack("<hhh", f.data) for f in link.sent if f.cmd_id == CMD_GOTO]
     assert gotos[0] == (1200, 900, 0)  # NAV1：batch1_positions[0]=3 → 3 号环心
     assert gotos[1] == (1200, 900, 0)  # NAV2：batch2_positions[0]=3 → 3 号环心
     assert gotos[-1] == (0, 0, 0)      # RETURN：回起点
-    places = [struct.unpack("<bhh", f.data) for f in link.sent if f.cmd == CMD_PLACE]
+    places = [struct.unpack("<bhh", f.data) for f in link.sent if f.cmd_id == CMD_PLACE]
     assert [p[0] for p in places] == [4, 2]  # batch1_colors[0], batch2_colors[0]
     assert all(p[1] == 0 and p[2] == 0 for p in places)  # 精细偏移属 Phase-4，保持 0
 
@@ -213,7 +213,7 @@ def test_nav_target_falls_back_to_origin_without_matching_ring():
     for _ in range(40):
         t += 0.05
         fsm.step(t)
-    gotos = [struct.unpack("<hhh", f.data) for f in link.sent if f.cmd == CMD_GOTO]
+    gotos = [struct.unpack("<hhh", f.data) for f in link.sent if f.cmd_id == CMD_GOTO]
     assert gotos and gotos[0] == (0, 0, 0)
 
 
@@ -227,7 +227,7 @@ def test_calibrate_uses_median_of_stable_frames():
 
         def __init__(self):
             super().__init__(ack=True, done_on=(CMD_GOTO, CMD_PLACE))
-            self.rx.insert(0, Frame(seq=0, cmd=CMD_POSE,
+            self.rx.insert(0, Frame(seq=0, cmd_id=CMD_POSE,
                                     data=struct.pack("<hhhH", 1000, 200, 0, 1)))
 
     tri_n = {"n": 0}

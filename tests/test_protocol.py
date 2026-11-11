@@ -13,13 +13,13 @@ def _mk_data():
 
 
 def test_roundtrip():
-    f = Frame(seq=7, cmd=CMD_GOTO, data=_mk_data())
+    f = Frame(seq=7, cmd_id=CMD_GOTO, data=_mk_data())
     assert StreamDecoder().feed(encode(f)) == [f]
 
 
 def test_frame_layout_bytes():
     # a5 | data_length(2, = len(data)+2) | seq | crc8 | cmd_id(2) | data | crc16(2)
-    f = Frame(seq=1, cmd=0x0002, data=bytes((4, 5, 2)))
+    f = Frame(seq=1, cmd_id=0x0002, data=bytes((4, 5, 2)))
     raw = encode(f)
     assert raw[0] == SOF == 0xA5
     assert struct.unpack("<H", raw[1:3])[0] == 2 + 3
@@ -36,8 +36,8 @@ def test_overhead_is_nine_bytes():
 
 
 def test_empty_data_roundtrip():
-    for cmd in (0x0001, 0xFFFF):
-        f = Frame(seq=255, cmd=cmd, data=b"")
+    for cmd_id in (0x0001, 0xFFFF):
+        f = Frame(seq=255, cmd_id=cmd_id, data=b"")
         assert StreamDecoder().feed(encode(f)) == [f]
 
 
@@ -122,6 +122,6 @@ def test_decode_frame_matches_stream_decoder():
 
 def test_encode_rejects_out_of_range():
     with pytest.raises(ValueError):
-        encode(Frame(seq=256, cmd=CMD_GOTO))
+        encode(Frame(seq=256, cmd_id=CMD_GOTO))
     with pytest.raises(ValueError):
-        encode(Frame(seq=0, cmd=0x10000))
+        encode(Frame(seq=0, cmd_id=0x10000))
