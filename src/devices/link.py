@@ -1,6 +1,6 @@
 """McuLink 设备层：协议化串口链路 + 带漂移推算模拟的 MockMcu。
 
-帧格式见 `docs/protocol-v1.0.0.md`（0xA5 帧头 + 2 字节 cmd_id + CRC16 整包校验）。
+帧格式见 `docs/protocol-v2.0.0.md` 表 1-2~1-4（0xA5 帧头 + 2 字节 cmd_id + CRC16 整包校验）。
 
 MockMcu 语义：
 - 收到任何帧都回 ACK（data = 被确认帧的 seq）。

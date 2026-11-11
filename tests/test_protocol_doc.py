@@ -1,11 +1,18 @@
-"""协议文档（`docs/protocol-v1.0.0.md`）与实现的一致性对账。
+"""协议文档（`docs/protocol-v2.0.0.md`）与实现的一致性对账。
 
-文档是交给电控组实现的契约，一旦与代码不符就是事故。这里做三类校验：
+文档是交给电控组实现的契约，一旦与代码不符就是事故。这里做四类校验：
 
 1. **帧格式表**：表 1-2 / 1-3 / 1-4 的字段名、偏移、大小必须与 `protocol.py` 常量一致。
-2. **命令码表**：表 1-5 的每一行（命令码、数据段长度）必须与 `CMD_*` / `DATA_LEN` 一致。
+2. **命令码表**：表 1-5 的每一行（命令码、数据段长度）必须与 v2.0.0 约定的命令集一致，
+   且每个命令都必须有「字节偏移量/大小/说明」详情表与一段 `typedef __packed struct`。
 3. **样例字节**：§1.4 的每个 hex 代码块必须能被 `decode_frame` 解回对应 Frame，
    且 `encode()` 重新编码后逐字节等于文档中的示例。
+4. **任务计划语义**：二维码四组数字的分组规则、以及第二批暂存区靶号按颜色配对
+   的算法必须与文档示例逐项吻合（这段最容易在实现时写错且不报错）。
+
+注意：帧布局（帧头、CRC、整包校验）属 v1.0.0 已冻结部分，本测试继续与
+`src/core/protocol.py` 的常量强绑定；命令码语义在 v2.0.0 变更，实现尚未切换，
+故命令集在此以文档为准逐一登记，实现切换后应改为与 `DATA_LEN` 双向对账。
 """
 import re
 from pathlib import Path
@@ -13,12 +20,9 @@ from pathlib import Path
 import pytest
 
 from src.core import protocol as P
-from src.core.protocol import (CMD_ACK, CMD_CALIBRATE, CMD_DONE, CMD_GOTO,
-                               CMD_HEARTBEAT, CMD_PICK, CMD_PLACE, CMD_POSE,
-                               CMD_STATE, CMD_TASK_PLAN, Frame, decode_frame,
-                               encode)
+from src.core.protocol import Frame, decode_frame, encode
 
-DOC = Path(__file__).resolve().parent.parent / "docs" / "protocol-v1.0.0.md"
+DOC = Path(__file__).resolve().parent.parent / "docs" / "protocol-v2.0.0.md"
 
 
 def i16(v):
@@ -29,28 +33,52 @@ def u16(v):
     return int(v).to_bytes(2, "little")
 
 
-# §1.4 中 hex 代码块的出现顺序 → 期望的 Frame
-EXPECTED_SAMPLES = [
-    ("0x0002 TASK_PLAN", Frame(1, CMD_TASK_PLAN,
-                               bytes((4, 5, 2, 3, 2, 1, 2, 5, 4, 3, 1, 2)))),
-    ("0x0003 GOTO", Frame(2, CMD_GOTO, i16(1200) + i16(300) + i16(450))),
-    ("0x0003 GOTO 导航实例", Frame(8, CMD_GOTO, i16(1200) + i16(900) + i16(0))),
-    ("0x0004 CALIBRATE", Frame(3, CMD_CALIBRATE, i16(-12) + i16(45) + i16(83))),
-    ("0x0005 PLACE", Frame(4, CMD_PLACE, b"\x01" + i16(-15) + i16(30))),
-    ("0x0006 PICK", Frame(5, CMD_PICK, b"\x02" + i16(10) + i16(-20))),
-    ("0x0001 HEARTBEAT", Frame(6, CMD_HEARTBEAT, b"")),
-    ("0x0007 ACK", Frame(1, CMD_ACK, b"\x02")),
-    ("0x0201 POSE", Frame(0, CMD_POSE, i16(1520) + i16(300) + i16(-1234) + u16(1))),
-    ("0x0203 DONE", Frame(0, CMD_DONE, b"\x07")),
-    ("0x0202 STATE", Frame(0, CMD_STATE, b"\x03")),
-    ("0x0003 边界值", Frame(7, CMD_GOTO, i16(32767) + i16(-32768) + i16(-18000))),
-]
+# ---------- v2.0.0 命令集（表 1-5，不含「不使用」表） ----------
 
-# 表 1-5 中声明的（命令码, 数据段长度）
+CMD_HEARTBEAT = 0x0001
+CMD_TASK_PLAN = 0x0002
+CMD_POSE = 0x0003
+CMD_TURNTABLE = 0x0004
+CMD_REGION = 0x0005
+CMD_ACK = 0x0007
+
 EXPECTED_CMD_TABLE = {
-    0x0001: 0, 0x0002: 12, 0x0003: 6, 0x0004: 6, 0x0005: 5, 0x0006: 5,
-    0x0007: 1, 0x0201: 8, 0x0202: 1, 0x0203: 1,
+    CMD_HEARTBEAT: 0,
+    CMD_TASK_PLAN: 16,
+    CMD_POSE: 9,
+    CMD_TURNTABLE: 16,
+    CMD_REGION: 1,
+    CMD_ACK: 1,
 }
+
+# 已废弃、接收方须静默丢弃的命令（文档单列一张表）
+RETIRED_CMDS = {0x0201, 0x0202, 0x0203}
+
+
+# ---------- §1.4 样例：二维码 452+321+254+312 ----------
+#
+# 第一批: 颜色 4,5,2 -> 靶 3,2,1
+# 第二批: 颜色 2,5,4 -> 粗加工区靶 3,1,2
+# 第二批暂存区按颜色配对: 颜色2 在第一批的 1 号靶, 颜色5 在 2 号, 颜色4 在 3 号 -> 1,2,3
+# 状态 0x8D = bit0(颜色能配上) + bit2(第2组是排列) + bit3(第4组是排列) + bit7(可用)
+TASK_PLAN_DATA = bytes((4, 5, 2, 3, 2, 1, 2, 5, 4, 3, 1, 2, 1, 2, 3, 0x8D))
+
+# 位姿: (1200, 600), 朝向 2.3deg, 残差 2.0mm, 质量 0xE3, 区域码 1(粗加工区)
+POSE_DATA = i16(1200) + i16(600) + i16(23) + bytes((4, 0xE3, 1))
+
+# 转盘: 圆心(250,-60), 半径150mm, 0号工位 60.0deg, 角速度 +60.0deg/s,
+#       3 工位, 状态 0x8F, 三工位颜色 4,5,2, 预留
+TURNTABLE_DATA = (i16(250) + i16(-60) + u16(150) + i16(600) + i16(600)
+                  + bytes((3, 0x8F)) + bytes((4, 5, 2)) + bytes((0,)))
+
+EXPECTED_SAMPLES = [
+    ("TASK_PLAN", Frame(2, CMD_TASK_PLAN, TASK_PLAN_DATA)),
+    ("POSE", Frame(3, CMD_POSE, POSE_DATA)),
+    ("TURNTABLE", Frame(4, CMD_TURNTABLE, TURNTABLE_DATA)),
+    ("REGION", Frame(5, CMD_REGION, bytes((2,)))),
+    ("HEARTBEAT", Frame(1, CMD_HEARTBEAT, b"")),
+    ("ACK", Frame(1, CMD_ACK, bytes((2,)))),
+]
 
 
 @pytest.fixture(scope="module")
@@ -78,13 +106,13 @@ def _hex_blocks(text):
 # ---------- 1. 帧格式表 ----------
 
 def test_doc_states_frame_layout_tables(doc_text):
-    for heading in ("表 1-2 通信协议格式", "表 1-3 frame_header 格式",
-                    "表 1-4 帧头详细定义", "表 1-5 命令码 ID 一览"):
+    for heading in ("表 1-1 波特率", "表 1-2 通信协议格式",
+                    "表 1-3 frame_header 格式", "表 1-4 帧头详细定义",
+                    "表 1-5 命令码 ID 一览"):
         assert heading in doc_text, f"文档缺少「{heading}」"
 
 
 def test_header_field_offsets_match_implementation(doc_text):
-    # 表 1-4 的四行：(域, 偏移, 大小)
     for field, offset, size in (("SOF", 0, 1), ("data_length", 1, 2),
                                 ("seq", 3, 1), ("CRC8", 4, 1)):
         row = re.search(rf"\|\s*{field}\s*\|\s*{offset}\s*\|\s*{size}\s*\|",
@@ -94,63 +122,71 @@ def test_header_field_offsets_match_implementation(doc_text):
     assert P.CMD_ID_LEN == 2
     assert P.TAIL_LEN == 2
     assert P.OVERHEAD == 9
-
-
-def test_doc_matches_layout_dimensions(doc_text):
-    # 表 1-2 的 5-byte / 2-byte / n-byte / 2-byte
-    assert "| frame_header | cmd_id | data | frame_tail |" in doc_text
-    assert f"5-byte | 2-byte | n-byte | 2-byte" in doc_text.replace("| ", "| ")
-    # 表 1-3 的 1-byte / 2-byte / 1-byte / 1-byte
-    assert "SOF | data_length | seq | CRC8" in doc_text
-
-
-def test_sof_value_in_doc(doc_text):
-    assert "固定值为 0xA5" in doc_text
     assert P.SOF == 0xA5
 
 
-def test_data_length_range_in_doc(doc_text):
+def test_doc_layout_dimensions(doc_text):
+    assert "| frame_header | cmd_id | data | frame_tail |" in doc_text
+    assert "| 5-byte | 2-byte | n-byte | 2-byte，CRC16，整包校验 |" in doc_text
+    assert "| SOF | data_length | seq | CRC8 |" in doc_text
+    assert "| 1-byte | 2-byte | 1-byte | 1-byte |" in doc_text
     assert f"{P.MIN_DATA_LENGTH}~{P.MAX_DATA_LENGTH}" in doc_text
+
+
+def test_broadcast_baudrate(doc_text):
+    assert "| 视觉单元←→机器人主控 | 115200 |" in doc_text
 
 
 # ---------- 2. 命令码表 ----------
 
-def test_cmd_table_rows_match_constants(doc_text):
-    """表 1-5 每行的「命令码 | 数据段长度」必须与实现一致（双向核对）。"""
+def test_cmd_table_rows_match_contract(doc_text):
+    """表 1-5 的「命令码 | 数据段长度」必须与约定完全一致（双向核对）。"""
     rows = re.findall(r"^\|\s*(0x[0-9A-Fa-f]{4})\s*\|\s*(\d+)\s*\|", doc_text,
                       re.MULTILINE)
     parsed = {int(cmd, 16): int(length) for cmd, length in rows}
+    # 剔除「不使用」表里的行（0x0201/0x0202/0x0203）
+    parsed = {k: v for k, v in parsed.items() if k not in RETIRED_CMDS}
     assert parsed == EXPECTED_CMD_TABLE, (
         f"文档表 1-5 与期望不符：\n文档 {parsed}\n期望 {EXPECTED_CMD_TABLE}")
-    # 实现的 DATA_LEN 必须与之完全相同
-    assert P.DATA_LEN == EXPECTED_CMD_TABLE
 
 
-def test_every_command_has_a_detail_table(doc_text):
-    """每个命令码都要有对应的「表 1-N 0xXXXX」小节与 typedef，不能漏写。"""
+def test_retired_commands_are_declared_unused(doc_text):
+    """0x0201/0x0202/0x0203 必须被明确标注为「不使用」，否则电控会照着实现。"""
+    section = doc_text[doc_text.index("本版本**不使用**"):]
+    section = section[:section.index("## 1.3")]
+    for cmd in RETIRED_CMDS:
+        assert f"0x{cmd:04X}" in section, f"未声明 0x{cmd:04X} 不再使用"
+
+
+def test_every_command_has_a_detail_table_and_typedef(doc_text):
     for cmd in EXPECTED_CMD_TABLE:
-        assert re.search(rf"表 1-\d+\s+0x{cmd:04X}\b", doc_text), (
+        assert re.search(rf"### 表 1-\d+ 0x{cmd:04X}\b", doc_text), (
             f"文档缺少命令 0x{cmd:04X} 的详细定义表")
-    typedefs = re.findall(r"typedef __packed struct", doc_text)
-    assert len(typedefs) == len(EXPECTED_CMD_TABLE), (
-        "typedef 数量应与命令数一致（每个命令一段）")
+    assert doc_text.count("typedef __packed struct") == len(EXPECTED_CMD_TABLE)
 
 
-def test_all_command_constants_documented(doc_text):
-    """反向核对：代码里定义的 CMD_* 都必须在表 1-5 出现，避免加了命令没写文档。"""
-    for name in dir(P):
-        if not name.startswith("CMD_"):
-            continue
-        value = getattr(P, name)
-        assert f"0x{value:04X}" in doc_text, f"{name}=0x{value:04X} 未写入文档"
+def test_every_command_has_its_data_length_documented(doc_text):
+    """表 1-5 声明的长度必须能被该命令的详情表字段偏移+大小复现。"""
+    for cmd, length in EXPECTED_CMD_TABLE.items():
+        if cmd == CMD_HEARTBEAT:
+            continue  # 0 字节，无字段表
+        start = doc_text.index(f"### 表 1-")
+        block_start = re.search(rf"### 表 1-\d+ 0x{cmd:04X}\b", doc_text).start()
+        block_end = doc_text.find("### 表 1-", block_start + 10)
+        if block_end < 0:
+            block_end = doc_text.find("\n## ", block_start)
+        block = doc_text[block_start:block_end]
+        offsets = re.findall(r"^\|\s*(\d+)\s*\|\s*(\d+)\s*\|", block, re.MULTILINE)
+        assert offsets, f"0x{cmd:04X} 的详情表没有字段行"
+        total = max(int(o) + int(s) for o, s in offsets)
+        assert total == length, (
+            f"0x{cmd:04X} 表 1-5 写 {length} 字节，字段表末位为 {total}")
 
 
-def test_cmd_direction_segments_in_doc(doc_text):
-    assert "`0x00xx` 为视觉单元发往机器人主控" in doc_text
-    assert "`0x02xx` 为机器人主控发往视觉单元" in doc_text
-    # 实现侧：CMD_ 前半段是上行、CMD_POSE 起是下行
-    assert CMD_HEARTBEAT == 0x0001 and CMD_ACK == 0x0007
-    assert CMD_POSE == 0x0201 and CMD_DONE == 0x0203
+def test_region_hint_is_the_only_downlink(doc_text):
+    """0x0005 是机器人主控发往视觉单元的唯一指令，这一定位必须写明。"""
+    assert "本帧是机器人主控发往视觉单元的**唯一**指令" in doc_text
+    assert "仅在目标区域发生改变时发送一次" in doc_text
 
 
 # ---------- 3. 样例字节 ----------
@@ -178,25 +214,81 @@ def test_samples_equal_reencode(doc_text):
 
 
 def test_sample_data_length_annotation(doc_text):
-    """文档写「data 12 字节，data_length = 14」，实现对 TASK_PLAN 必须成立。"""
-    assert "`data_length` = 14 = `0x000E`" in doc_text
-    frame = EXPECTED_SAMPLES[0][1]
-    assert len(frame.data) == 12
-    assert P.CMD_ID_LEN + len(frame.data) == 14
-    assert encode(frame)[1:3] == b"\x0e\x00"     # 小端
+    """文档写「data 16 字节，data_length = 18 = 0x0012」，实现对 TASK_PLAN 必须成立。"""
+    assert "`data_length` = 18 = `0x0012`" in doc_text
+    assert len(TASK_PLAN_DATA) == 16
+    assert P.CMD_ID_LEN + len(TASK_PLAN_DATA) == 18
+    assert encode(EXPECTED_SAMPLES[0][1])[1:3] == b"\x12\x00"
 
 
-# ---------- 4. 附录一 CRC 代码 ----------
+# ---------- 4. 任务计划语义 ----------
+
+def test_task_plan_sample_encodes_qr_452_321_254_312(doc_text):
+    """样例里前 12 字节必须与二维码四组数字逐位对应。"""
+    qr = "452+321+254+312"
+    g1, g2, g3, g4 = qr.split("+")
+    expect = bytes([int(c) for c in g1 + g2 + g3 + g4])
+    assert TASK_PLAN_DATA[:12] == expect, (
+        f"前 12 字节应为四组数字原样拼接 {expect.hex(' ')}")
+
+
+def test_staging_ring_pairs_by_color(doc_text):
+    """第二批暂存区靶号 = 在第一批中找同色物料的靶号；同批内颜色唯一故结果唯一。"""
+    g1, g2, g3, _g4 = "452", "321", "254", "312"
+    b1_color = [int(c) for c in g1]
+    b1_ring = [int(c) for c in g2]
+    b2_color = [int(c) for c in g3]
+
+    # 同批内颜色互不相同 —— 这是配对唯一的充要条件，必须显式断言
+    assert len(set(b1_color)) == len(b1_color)
+    assert len(set(b2_color)) == len(b2_color)
+
+    expect = [b1_ring[b1_color.index(c)] for c in b2_color]
+    assert expect == [1, 2, 3]
+    assert list(TASK_PLAN_DATA[12:15]) == expect, "文档样例的暂存区靶号与配对算法不符"
+
+
+def test_task_plan_status_byte_bits(doc_text):
+    """status 0x8D = 颜色能配上 | 第2组是排列 | 第4组是排列 | 可用。"""
+    g2, g4 = "321", "312"
+    assert sorted(int(c) for c in g2) == [1, 2, 3]
+    assert sorted(int(c) for c in g4) == [1, 2, 3]
+    status = TASK_PLAN_DATA[15]
+    assert status & 0x80, "bit7 可用位必须置起"
+    assert status & 0x01, "bit0 颜色能配上必须置起"
+    assert status & 0x04, "bit2 第2组是排列必须置起"
+    assert status & 0x08, "bit3 第4组是排列必须置起"
+    assert status == 0x8D
+
+
+def test_doc_documents_palletizing(doc_text):
+    """码垛：第二批在暂存区必须叠在第一批之上且上下同色，文档不能漏。"""
+    assert "码垛" in doc_text
+    assert "上下两层颜色一致" in doc_text
+    # 示意图里第二批第 1 件颜色 2 -> 第一批同色在 1 号靶 -> 暂存区靶号 1
+    assert "| 第二批 | 1 | 2 | 3 | 1 |" in doc_text
+
+
+def test_doc_states_pose_replaces_not_adds(doc_text):
+    """位姿是绝对量，主控须整体替换而非叠加——这条写错会导致长期偏差。"""
+    assert "整体**替换**" in doc_text or "整体替换" in doc_text
+
+
+def test_doc_states_single_target_cannot_solve_heading(doc_text):
+    """必须讲清单靶缺朝向自由度，否则电控会以为一个靶就够。"""
+    assert "旋转对称" in doc_text
+    assert "缺少的正是朝向" in doc_text
+
+
+# ---------- 5. 附录与编码卫生 ----------
 
 def test_appendix_crc_table_agrees_with_implementation(doc_text):
-    """文档附录一的 CRC8 表首行与实现生成的表一致（防止贴错表）。"""
-    from src.core.crc import CRC8_TAB, CRC16_TAB
+    from src.core.crc import CRC16_TAB, CRC8_TAB
 
     appendix = doc_text[doc_text.index("附录一"):]
     assert "0x00, 0x5e, 0xbc, 0xe2, 0x61, 0x3f, 0xdd, 0x83" in appendix
     assert "0x35," in appendix
     assert CRC8_TAB[0] == 0x00 and CRC8_TAB[1] == 0x5E and CRC8_TAB[255] == 0x35
-    # CRC16 表首行
     assert "0x0000, 0x1189, 0x2312, 0x329b" in appendix
     assert CRC16_TAB[0] == 0x0000 and CRC16_TAB[1] == 0x1189
 
@@ -205,3 +297,11 @@ def test_appendix_documents_both_init_values(doc_text):
     from src.core.crc import CRC16_INIT, CRC8_INIT
     assert "CRC8_INIT = 0xff" in doc_text and CRC8_INIT == 0xFF
     assert "CRC_INIT = 0xffff" in doc_text and CRC16_INIT == 0xFFFF
+
+
+def test_doc_has_no_encoding_damage(doc_text):
+    """文档必须是无 BOM 的干净 UTF-8：出现私用区字符或替换符即视为损坏。"""
+    assert not doc_text.startswith("\ufeff"), "文档带 BOM"
+    assert "\ufffd" not in doc_text, "文档含替换字符"
+    bad = [c for c in doc_text if 0xE000 <= ord(c) <= 0xF8FF]
+    assert not bad, f"文档含 {len(bad)} 个私用区字符（编码损坏）"

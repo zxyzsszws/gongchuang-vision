@@ -1,6 +1,6 @@
 """CRC8 / CRC16 校验（纯函数，无硬件依赖）。
 
-参数取自协议文档（`docs/protocol-v1.0.0.md`）：
+参数取自协议文档（`docs/protocol-v2.0.0.md` 附录一）：
 - **CRC8**：多项式 0x31 的反射形式（0x8C，LSB-first），初值 0xFF，无结果异或。
   用于帧头 5 字节中的最后 1 字节，覆盖 SOF / data_length / seq 共 4 字节。
 - **CRC16**：多项式 0x1021 的反射形式（0x8408，LSB-first），初值 0xFFFF，

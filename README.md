@@ -2,7 +2,7 @@
 
 2026 年工程创新大赛「智能搬运」赛项的**视觉侧**软件：二维码扫码 → 任务解析 → 导航/校准/放置全流程状态机，经 UART 协议与机器人主控（**电控组负责，另一队伍**）通信。视觉不做底层运动控制，只输出任务、导航点与校准修正量。
 
-- 协议文档（交电控组冻结）：[`docs/protocol-v1.0.0.md`](docs/protocol-v1.0.0.md)（帧格式与校验算法对齐《RoboMaster 2027 机甲大师高校系列赛通信协议 V1.0.0》）
+- 协议文档（交电控组冻结）：[`docs/protocol-v2.0.0.md`](docs/protocol-v2.0.0.md)（视觉只输出测量结果，路径规划与运动控制全部由电控负责；帧格式与校验算法对齐《RoboMaster 2027 机甲大师高校系列赛通信协议 V1.0.0》）
 - 设计规格：[`docs/superpowers/specs/2026-10-14-gongchuang-vision-design.md`](docs/superpowers/specs/2026-10-14-gongchuang-vision-design.md)
 
 ## 1. 环境安装
@@ -24,7 +24,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-全部 131 项测试**无需任何硬件**：算法单测 + 校准精度回归（合成数据）+ 协议往返/粘包断包/坏校验/文档示例对账 + CRC 数据手册对齐 + MockMcu 仿真端到端（含校准闭环收敛断言）+ **live 视觉链路合成图端到端**（投影三色环 → 霍夫检出 → 外参换算 → 校准修正量方向正确）。`pytest.ini`/配置已设 `pythonpath=.`，在仓库根目录运行即可（也从任意目录可运行，见 `tests/conftest.py`）。
+全部 132 项测试**无需任何硬件**：算法单测 + 校准精度回归（合成数据）+ 协议往返/粘包断包/坏校验/文档示例对账 + CRC 数据手册对齐 + MockMcu 仿真端到端（含校准闭环收敛断言）+ **live 视觉链路合成图端到端**（投影三色环 → 霍夫检出 → 外参换算 → 校准修正量方向正确）。`pytest.ini`/配置已设 `pythonpath=.`，在仓库根目录运行即可（也从任意目录可运行，见 `tests/conftest.py`）。
 
 > Windows 注意：若 `python` 是 Microsoft Store 的占位符，命令会静默失败（退出码 1、无输出）。用 `conda activate base` 后的 python，或直接写 `C:\Users\<user>\miniconda3\python.exe`。
 
@@ -101,7 +101,7 @@ src/core/          # ③ 调度层：crc（CRC8/CRC16）、protocol（帧编解�
 src/main.py        # ④ 入口：--mode live|replay|sim
 tests/             # pytest：算法单测 + 校准精度回归 + 协议往返/文档对账 + sim 端到端 + live 合成图端到端
 tools/             # calibrate_camera.py 外参标定、replay_log.py 日志复盘
-docs/              # protocol-v1.0.0.md（电控冻结文档）+ superpowers/specs 设计文档
+docs/              # protocol-v2.0.0.md（电控冻结文档）+ superpowers/specs 设计文档
 ```
 
 两条硬性规则：算法层纯函数化（合成数据即可验证精度、不依赖真车）；MockMcu 是一等公民（电控代码就绪前即可跑通全链路，联调仅切换 `serial.port` 配置）。
@@ -113,5 +113,5 @@ docs/              # protocol-v1.0.0.md（电控冻结文档）+ superpowers/spe
 - **相机读取为同步单线程**：live/replay 的 `CameraSource.read()` + 检测在 `fsm.step` 内联执行，未实现 spec §2.5 的相机线程→帧队列模型（控制端裁决：F7 有意推迟——线程化需真实相机才能验证，慢帧期间心跳/ACK 时序会顺延）。
 - **结构化 JSONL 日志尚未接线**：`setup_logging()` 已装配 handler，但业务代码仍只往 `log_events` 里记事件，`logs/*.jsonl` 目前是空文件，`tools/replay_log.py` 因此无内容可读（Phase-4 B 项）。
 - **颜色识别与 PICK 未接入流程**：`detect_colors` 与 `PICK(0x0006)` 已实现但 FSM 不使用，原料区转盘的颜色/顺序识别与取料动作待电控联调后接（Phase-4 C 项）。
-- **逐件精细放置偏移属 Phase-4**：PLACE 的 `fine_x/fine_y` 当前恒发 0，导航只用批次位置首位对应的环心（`docs/protocol-v1.0.0.md` 表 1-10）。
+- **逐件精细放置偏移属 Phase-4**：PLACE 的 `fine_x/fine_y` 当前恒发 0，导航只用批次位置首位对应的环心（`docs/protocol-v2.0.0.md` 表 1-10）。
 
