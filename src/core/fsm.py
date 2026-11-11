@@ -74,12 +74,12 @@ class MatchFSM:
         self._seq = self._seq % 255 + 1  # 1..255，0 保留给链路自增帧（POSE 等）
         return self._seq
 
-    def _send(self, cmd, payload, now):
+    def _send(self, cmd, data, now):
         if cmd in _CONTROL_CMDS and self._ack_pending is not None:
             # F2 裁决：上一条控制帧未解决（ACK 未回且重发预算未耗尽）前闸住新控制帧，
             # 保护 spec §3 的重传语义不被后续帧覆盖（心跳等周期帧不走此路径）。
             return False
-        frame = Frame(self._next_seq(), cmd, payload)
+        frame = Frame(self._next_seq(), cmd, data)
         self.link.send(frame)
         self._ack_pending = [cmd, frame.seq, now, 1, frame]
         return True
@@ -88,12 +88,18 @@ class MatchFSM:
         while (f := self.link.poll()) is not None:
             self._last_in = now  # 任何来流都刷新心跳超时基准
             if f.cmd == CMD_POSE:
-                x, y, h01, _ = struct.unpack("<hhhH", f.payload)
+                # 校验通过但长度不符（主控实现 bug / 版本不一致）不得让状态机崩：
+                # 丢弃并记录，等下一帧。POSE 固定 8 字节（<hhhH）。
+                if len(f.data) != 8:
+                    self.log_events.append(("BAD_POSE_LEN", len(f.data), now))
+                    continue
+                x, y, h01, _ = struct.unpack("<hhhH", f.data)
                 # POSE 的 seq 恒为 0（Task 10 约定），不得按 seq 去重丢帧
                 self._last = self.pf.update(Pose(x, y, h01 / 10.0))
             elif f.cmd == CMD_ACK:
-                if (self._ack_pending and f.payload
-                        and f.payload[0] == self._ack_pending[1]):
+                # ACK 的 data = 被确认帧的 seq（1 字节）
+                if (self._ack_pending and f.data
+                        and f.data[0] == self._ack_pending[1]):
                     self._ack_pending = None
             elif f.cmd == CMD_DONE:
                 self._action_done = True
@@ -176,13 +182,13 @@ class MatchFSM:
     def _s_PLAN_READY(self, now):
         self._goto("NAV1", now)
 
-    def _action(self, cmd, payload, nxt, now):
+    def _action(self, cmd, data, nxt, now):
         """NAV/PLACE/RETURN 通用模式：进入即发，CMD_DONE 推进，超时重发。"""
         if self._action_done:
             self._goto(nxt, now)
             return
         if not self._sent:
-            if self._send(cmd, payload, now):
+            if self._send(cmd, data, now):
                 self._sent = True
             return
         if now - self.entered_at > self.cfg["timing"]["nav_timeout_s"]:

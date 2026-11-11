@@ -40,14 +40,19 @@ python3 -m pip install --user "pytest>=7,<9"
 ```bash
 cd /home/uav/gongchuang-vision
 
-python3 -m pytest -q                 # 85 passed（在任意 cwd 下均可）
+python3 -m pytest -q                 # 上次实测 85 passed（在任意 cwd 下均可）
 python3 -m src.main --mode sim       # 全流程到 DONE，退出码 0
 ```
 
-实测结果：
+实测结果（2026-10-31，协议 v0.1 时期）：
 - pytest 8.4.2：**85 passed**（项目根与 `/tmp` 两种 cwd 均通过）
 - pytest 6.2.5：**85 passed**（仅 `pythonpath` 选项警告，已由 conftest 兜底）
 - `--mode sim`：`IDLE → … → DONE`，两次 `CAL_APPLIED`，退出码 0
+
+> **⚠ 待复测（协议 v0.2）**：串口帧格式已改为 `A5 | data_length(2B) | seq | CRC8 |
+> cmd_id(2B) | data | CRC16`（见 `docs/protocol-v0.2.md`），本地 Windows 全量测试
+> **117 passed**。目标机当时不可用，**尚未在 Jetson 上复测**；下次可连时先跑
+> `python3 -m pytest -q` 与 `--mode sim` 确认，再谈串口联调。
 
 ## 4. 尚未完成（上赛场前必须做）
 
@@ -61,6 +66,8 @@ python3 -m src.main --mode sim       # 全流程到 DONE，退出码 0
 3. **相机外参未标定**：`camera_calib_file` 指向的仍是示例文件。现场需按
    README §5 用 `tools/calibrate_camera.py` 实测标定。
 4. **串口未接**：`serial.port` 默认 `COM3`（Windows 命名），Linux 下应为
-   `/dev/ttyTHS1` 或 `/dev/ttyUSB0` 之类，需按实际主控连接确认。
+   `/dev/ttyTHS1` 或 `/dev/ttyUSB0` 之类，需按实际主控连接确认。**协议 v0.2 已把
+   帧格式换成 0xA5 帧头 + 2 字节 cmd_id + CRC16 整包校验**，联调前须把
+   `docs/protocol-v0.2.md` 交电控组按新格式实现，v0.1 的 `AA 55 … xor 0D` 不再兼容。
 5. **反向隧道未使用**：机器可直连 PyPI（已配 USTC 镜像），
    `ssh -R 7890:127.0.0.1:7897` 在本场景非必需。

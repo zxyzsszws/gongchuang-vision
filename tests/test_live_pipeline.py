@@ -20,8 +20,9 @@ from src.algorithms.geometry import Similarity
 from src.algorithms.ring_detect import detect_rings, detect_tri_ring
 from src.algorithms.types import Pose
 from src.devices.vision import VisionPerceive
+from tests.conftest import repo_path
 
-FIELD = load_field_map("config/field.example.yaml")
+FIELD = load_field_map(repo_path("config", "field.example.yaml"))
 
 # 相机外参：1mm/px、无旋转，图像中心 (320,240) 对应车体原点。
 # robot = pixel − (320,240)，故 tx/ty 为负。三色环间距 150mm → 150px，落在 spacing 带内。
@@ -70,7 +71,8 @@ class _ScriptedCamera:
 
 def _cfg(**ring_over):
     import yaml
-    with open("config/default.yaml", encoding="utf-8") as fh:
+    from tests.conftest import repo_path
+    with open(repo_path("config", "default.yaml"), encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh)
     cfg["ring"].update(ring_over)
     return cfg

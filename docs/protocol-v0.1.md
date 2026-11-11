@@ -1,5 +1,10 @@
 # 串口协议 v0.1 —— 视觉 ↔ 主控（电控组冻结文档）
 
+> **⚠ 已废弃（2026-11）。现行协议为 [`protocol-v0.2.md`](protocol-v0.2.md)。**
+> v0.1 的帧格式 `AA 55 | len | seq | cmd | payload | xor | 0D`（单字节 cmd、
+> XOR 校验）已整体替换为 `A5 | data_length(2B) | seq | CRC8 | cmd_id(2B) | data | CRC16`。
+> 本文仅作历史留档，**不要再据本文实现**。下文命令码/字节示例均为 v0.1 口径。
+
 状态：视觉侧已按此实现并通过全量测试（`src/core/protocol.py` / `src/devices/link.py` / `src/core/fsm.py`），待与电控组联调前冻结。
 上游规格：`docs/superpowers/specs/2026-10-14-gongchuang-vision-design.md` 第 3 节。
 **本文所有字节示例均由实现代码 `encode()` 实际运行输出（非手算），与视觉侧发出/解析的字节完全一致。**

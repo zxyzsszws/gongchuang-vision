@@ -17,13 +17,14 @@ from src.algorithms.fieldmap import load_field_map
 from src.devices.link import MockMcu
 from src.devices.sim_scene import SimScene
 from src.main import run
+from tests.conftest import repo_path
 
 # 每次校准应用时的修正量下限（mm）：|dx|+|dy| 必须达到此漂移级量才算激励了闭环
 APPLIED_FLOOR_MM = 20.0
 
 
 def _cfg():
-    with open("config/default.yaml", encoding="utf-8") as fh:
+    with open(repo_path("config", "default.yaml"), encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
@@ -40,7 +41,7 @@ def _run_match(drift_mm_per_m, drift_deg_per_m=0.1, pose_hz=10.0,
     MockMcu.send 同步叠加 bias，故「应用后」在同一拍即可读取。
     """
     cfg = _cfg()
-    field = load_field_map("config/field.example.yaml")
+    field = load_field_map(repo_path("config", "field.example.yaml"))
     link = MockMcu(drift_mm_per_m=drift_mm_per_m,
                    drift_deg_per_m=drift_deg_per_m, pose_hz=pose_hz)
     sim = SimScene(field, link=link)
@@ -62,7 +63,7 @@ def _run_match(drift_mm_per_m, drift_deg_per_m=0.1, pose_hz=10.0,
 
 def test_sim_entrypoint_reaches_done_and_uses_config_drift():
     # 入口 run()（虚拟时钟，确定性）以 config/sim 的漂移参数装配 MockMcu。
-    fsm = run("config/default.yaml", "sim", max_seconds=120.0)
+    fsm = run(repo_path("config", "default.yaml"), "sim", max_seconds=120.0)
     assert fsm.state == "DONE"
     assert fsm.link.drift_mm_per_m == _cfg()["sim"]["drift_mm_per_m"]
     cals = [e for e in fsm.log_events if e[0] == "CAL_APPLIED"]

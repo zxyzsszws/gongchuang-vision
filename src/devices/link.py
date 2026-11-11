@@ -1,10 +1,12 @@
 """McuLink 设备层：协议化串口链路 + 带漂移推算模拟的 MockMcu。
 
+帧格式见 `docs/protocol-v0.2.md`（0xA5 帧头 + 2 字节 cmd_id + CRC16 整包校验）。
+
 MockMcu 语义：
-- 收到任何帧都回 ACK（payload = 被确认帧的 seq）。
-- CMD_CALIBRATE payload `<hhh` 为修正量（fixed − last），**叠加**进推算位姿，
+- 收到任何帧都回 ACK（data = 被确认帧的 seq）。
+- CMD_CALIBRATE data `<hhh` 为修正量（fixed − last），**叠加**进推算位姿，
   使上报值靠近真值（规格「修正量，主控叠加到其推算」）。
-- tick(now) 按 pose_hz 产出 CMD_POSE（payload `<hhhH`: x, y, heading01, odometry），
+- tick(now) 按 pose_hz 产出 CMD_POSE（data `<hhhH`: x, y, heading01, odometry），
   上报位姿 = 真值 + 漂移×里程 + 已应用的修正量；每上报一次里程 +1m。
 - 收到 CMD_GOTO/CMD_PICK/CMD_PLACE 视为接受动作：**延迟 1 个 tick** 回
   CMD_DONE(task_id)，并在触发 DONE 时推进 `_odometry`（动作行进的里程增量）。
@@ -65,9 +67,11 @@ class MockMcu:
             with self._lock:
                 self._ack_seq = (self._ack_seq + 1) & 0xFF
                 self._tx.append(Frame(seq=self._ack_seq, cmd=CMD_ACK,
-                                      payload=bytes([acked.seq])))
+                                      data=bytes([acked.seq])))
                 if acked.cmd == CMD_CALIBRATE:
-                    dx, dy, dh01 = struct.unpack("<hhh", acked.payload)
+                    if len(acked.data) != 6:      # 防御：长度不符不崩，仅忽略
+                        continue
+                    dx, dy, dh01 = struct.unpack("<hhh", acked.data)
                     # 修正量叠加到推算位姿（不是相减：那会把上报推离真值）
                     self._bias_x += dx
                     self._bias_y += dy
@@ -90,7 +94,7 @@ class MockMcu:
         for task_id in fired:
             self._odometry += 1.0  # 动作执行亦产里程（GOTO/PLACE 行进）
             self._tx.append(Frame(seq=0, cmd=CMD_DONE,
-                                  payload=bytes([task_id])))
+                                  data=bytes([task_id])))
 
     def tick(self, now):
         with self._lock:
@@ -114,8 +118,8 @@ class MockMcu:
                 self.out_of_range_clamps += 1  # 每个被钳位的 pack 计一次
             with self._lock:
                 self._tx.append(Frame(seq=0, cmd=CMD_POSE,
-                                      payload=struct.pack("<hhhH", x, y, h,
-                                                          int(self._odometry) & 0xFFFF)))
+                                      data=struct.pack("<hhhH", x, y, h,
+                                                       int(self._odometry) & 0xFFFF)))
 
     def poll(self):
         with self._lock:

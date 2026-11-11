@@ -4,8 +4,9 @@ import random
 from src.algorithms.calibration import calibrate
 from src.algorithms.fieldmap import load_field_map
 from src.algorithms.types import Pose, RingObs, TriRingObs
+from tests.conftest import repo_path
 
-FIELD = load_field_map("config/field.example.yaml")
+FIELD = load_field_map(repo_path("config", "field.example.yaml"))
 
 
 def _obs_with_error(ex, ey, ehead):

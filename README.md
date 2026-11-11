@@ -2,7 +2,7 @@
 
 2026 年工程创新大赛「智能搬运」赛项的**视觉侧**软件：二维码扫码 → 任务解析 → 导航/校准/放置全流程状态机，经 UART 协议与机器人主控（**电控组负责，另一队伍**）通信。视觉不做底层运动控制，只输出任务、导航点与校准修正量。
 
-- 协议文档（交电控组冻结）：[`docs/protocol-v0.1.md`](docs/protocol-v0.1.md)
+- 协议文档（交电控组冻结）：[`docs/protocol-v0.2.md`](docs/protocol-v0.2.md)（v0.1 已废弃，留档于 [`docs/protocol-v0.1.md`](docs/protocol-v0.1.md)）
 - 设计规格：[`docs/superpowers/specs/2026-10-14-gongchuang-vision-design.md`](docs/superpowers/specs/2026-10-14-gongchuang-vision-design.md)
 
 ## 1. 环境安装
@@ -24,7 +24,7 @@ pip install -r requirements.txt
 pytest -v
 ```
 
-全部 85 项测试**无需任何硬件**：算法单测 + 校准精度回归（合成数据）+ 协议往返/粘包断包 + MockMcu 仿真端到端（含校准闭环收敛断言）+ **live 视觉链路合成图端到端**（投影三色环 → 霍夫检出 → 外参换算 → 校准修正量方向正确）。`pytest.ini`/配置已设 `pythonpath=.`，在仓库根目录运行即可。
+全部 117 项测试**无需任何硬件**：算法单测 + 校准精度回归（合成数据）+ 协议往返/粘包断包/坏校验/文档示例对账 + CRC 数据手册对齐 + MockMcu 仿真端到端（含校准闭环收敛断言）+ **live 视觉链路合成图端到端**（投影三色环 → 霍夫检出 → 外参换算 → 校准修正量方向正确）。`pytest.ini`/配置已设 `pythonpath=.`，在仓库根目录运行即可（也从任意目录可运行，见 `tests/conftest.py`）。
 
 > Windows 注意：若 `python` 是 Microsoft Store 的占位符，命令会静默失败（退出码 1、无输出）。用 `conda activate base` 后的 python，或直接写 `C:\Users\<user>\miniconda3\python.exe`。
 
@@ -50,7 +50,7 @@ python -m src.main --config config/default.yaml --mode sim|replay|live [--max-se
 |---|---|
 | `mode` | 缺省运行模式（命令行 `--mode` 优先） |
 | `camera` | `main_index` 主相机设备索引（live 用）、`qr_index` 扫码相机索引（与主摄相同则复用）、`qr_model_dir` WeChatQRCode 模型目录、`width/height/fps` |
-| `serial` | `port`（如 COM3）、`baudrate`（115200，与协议一致勿改） |
+| `serial` | `port`（如 COM3 / Linux 下 `/dev/ttyTHS1`）、`baudrate`（默认 115200，须与主控一致；协议本身与波特率无关） |
 | `camera_calib_file` | 相机外参文件（像素→车体毫米），**live/replay 必填**，见下节标定流程 |
 | `sim` | sim 模式 MockMcu 漂移模型：`drift_mm_per_m` 里程漂移、`drift_deg_per_m` 航向缓漂（默认 8mm/m 使整场标称误差留在 int16 里程量程内） |
 | `timing` | 协议时序：`heartbeat_ms` 心跳周期、`heartbeat_timeout_s` 断链超时、`ack_timeout_ms`/`ack_retry` ACK 重发、`scan_timeout_s` 扫码超时（不可降级 → SAFESTOP） |
@@ -97,11 +97,11 @@ python tools/replay_log.py logs/run_xxx.jsonl
 config/            # default.yaml + field*.yaml（场地图）+ camera_calib*.yaml（相机外参）
 src/algorithms/    # ① 纯函数层：qr_parse/color_detect/ring_detect/calibration/geometry（不碰硬件）
 src/devices/       # ② 设备层：camera（USB/Video/ImageFolder/多摄）、vision（感知管线）、link（SerialLink/MockMcu）
-src/core/          # ③ 调度层：protocol（帧编解码）、kalman、fsm（比赛状态机）
+src/core/          # ③ 调度层：crc（CRC8/CRC16）、protocol（帧编解码）、kalman、fsm（比赛状态机）
 src/main.py        # ④ 入口：--mode live|replay|sim
-tests/             # pytest：算法单测 + 校准精度回归 + 协议往返 + sim 端到端 + live 合成图端到端
+tests/             # pytest：算法单测 + 校准精度回归 + 协议往返/文档对账 + sim 端到端 + live 合成图端到端
 tools/             # calibrate_camera.py 外参标定、replay_log.py 日志复盘
-docs/              # protocol-v0.1.md（电控冻结文档）+ specs/ 设计文档
+docs/              # protocol-v0.2.md（电控冻结文档）+ specs/ 设计文档
 ```
 
 两条硬性规则：算法层纯函数化（合成数据即可验证精度、不依赖真车）；MockMcu 是一等公民（电控代码就绪前即可跑通全链路，联调仅切换 `serial.port` 配置）。
@@ -112,6 +112,6 @@ docs/              # protocol-v0.1.md（电控冻结文档）+ specs/ 设计文�
 - **三色环分组门限是像素量**：`ring.spacing_px_*` 指图像里的像素间距，随安装高度/焦距变化，**换相机或改安装必须重标**。数字环按半径带分编号（`ring.geo`），三色环靠「等半径 + 共线 + 间距」与之区分，两类不再串味。
 - **相机读取为同步单线程**：live/replay 的 `CameraSource.read()` + 检测在 `fsm.step` 内联执行，未实现 spec §2.5 的相机线程→帧队列模型（控制端裁决：F7 有意推迟——线程化需真实相机才能验证，慢帧期间心跳/ACK 时序会顺延）。
 - **结构化 JSONL 日志尚未接线**：`setup_logging()` 已装配 handler，但业务代码仍只往 `log_events` 里记事件，`logs/*.jsonl` 目前是空文件，`tools/replay_log.py` 因此无内容可读（Phase-4 B 项）。
-- **颜色识别与 PICK 未接入流程**：`detect_colors` 与 `PICK(0x15)` 已实现但 FSM 不使用，原料区转盘的颜色/顺序识别与取料动作待电控联调后接（Phase-4 C 项）。
-- **逐件精细放置偏移属 Phase-4**：PLACE 的 `fine_x/fine_y` 当前恒发 0，导航只用批次位置首位对应的环心（`docs/protocol-v0.1.md` §6.5）。
+- **颜色识别与 PICK 未接入流程**：`detect_colors` 与 `PICK(0x0006)` 已实现但 FSM 不使用，原料区转盘的颜色/顺序识别与取料动作待电控联调后接（Phase-4 C 项）。
+- **逐件精细放置偏移属 Phase-4**：PLACE 的 `fine_x/fine_y` 当前恒发 0，导航只用批次位置首位对应的环心（`docs/protocol-v0.2.md` §6.5）。
 
