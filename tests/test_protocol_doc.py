@@ -11,8 +11,8 @@
    的算法必须与文档示例逐项吻合（这段最容易在实现时写错且不报错）。
 
 注意：帧布局（帧头、CRC、整包校验）属 v1.0.0 已冻结部分，本测试继续与
-`src/core/protocol.py` 的常量强绑定；命令码语义在 v2.0.0 变更，实现尚未切换，
-故命令集在此以文档为准逐一登记，实现切换后应改为与 `DATA_LEN` 双向对账。
+`src/core/protocol.py` 的常量强绑定。命令集在 v2.0.0 已切换完毕，因此表 1-5
+与 `protocol.DATA_LEN` 做**双向**对账：文档多一行或少一行都会红。
 """
 import re
 from pathlib import Path
@@ -126,15 +126,25 @@ def test_header_field_offsets_match_implementation(doc_text):
 
 
 def test_doc_layout_dimensions(doc_text):
-    assert "| frame_header | cmd_id | data | frame_tail |" in doc_text
-    assert "| 5-byte | 2-byte | n-byte | 2-byte，CRC16，整包校验 |" in doc_text
-    assert "| SOF | data_length | seq | CRC8 |" in doc_text
-    assert "| 1-byte | 2-byte | 1-byte | 1-byte |" in doc_text
+    """表 1-2 / 1-3 的字段与尺寸必须与实现一致。
+
+    文档表格是 Markdown 对齐格式，单元格内有多余空格，故用**空白宽松**的正则，
+    而不是逐字字符串包含——否则文档一重新排版测试就红，但它其实什么也没测到。
+    """
+    def row(*cells):
+        return re.search(r"\|\s*" + r"\s*\|\s*".join(map(re.escape, cells))
+                         + r"\s*\|", doc_text)
+
+    assert row("frame_header", "cmd_id", "data", "frame_tail"), \
+        "表 1-2 缺少 frame_header / cmd_id / data / frame_tail 一行"
+    assert row("5-byte", "2-byte", "n-byte"), "表 1-2 的尺寸行缺失"
+    assert row("SOF", "data_length", "seq", "CRC8"), "表 1-3 头部字段行缺失"
+    assert row("1-byte", "2-byte", "1-byte"), "表 1-3 的尺寸行缺失"
     assert f"{P.MIN_DATA_LENGTH}~{P.MAX_DATA_LENGTH}" in doc_text
 
 
 def test_broadcast_baudrate(doc_text):
-    assert "| 视觉单元←→机器人主控 | 115200 |" in doc_text
+    assert re.search(r"\|\s*视觉单元←→机器人主控\s*\|\s*115200\s*\|", doc_text)
 
 
 # ---------- 2. 命令码表 ----------
@@ -181,6 +191,16 @@ def test_every_command_has_its_data_length_documented(doc_text):
         total = max(int(o) + int(s) for o, s in offsets)
         assert total == length, (
             f"0x{cmd:04X} 表 1-5 写 {length} 字节，字段表末位为 {total}")
+
+
+def test_expected_table_matches_implementation_data_len():
+    """本文件登记的期望表必须与 `protocol.DATA_LEN` 一致（防止两处各说各话）。
+
+    文档 ↔ EXPECTED_CMD_TABLE 由 ``test_cmd_table_rows_match_contract`` 保证，
+    这里补上 EXPECTED_CMD_TABLE ↔ 实现的另一半，构成完整的三方对账。
+    """
+    assert EXPECTED_CMD_TABLE == P.DATA_LEN
+    assert RETIRED_CMDS <= P.RETIRED_CMDS
 
 
 def test_region_hint_is_the_only_downlink(doc_text):
@@ -265,8 +285,14 @@ def test_doc_documents_palletizing(doc_text):
     """码垛：第二批在暂存区必须叠在第一批之上且上下同色，文档不能漏。"""
     assert "码垛" in doc_text
     assert "上下两层颜色一致" in doc_text
+
+    def row(*cells):
+        return re.search(r"\|\s*" + r"\s*\|\s*".join(map(re.escape, cells))
+                         + r"\s*\|", doc_text)
+
     # 示意图里第二批第 1 件颜色 2 -> 第一批同色在 1 号靶 -> 暂存区靶号 1
-    assert "| 第二批 | 1 | 2 | 3 | 1 |" in doc_text
+    assert row("第二批", "1", "2", "3", "1"), \
+        "文档的码垛示意表缺少「第二批 1 号 颜色2 粗加工区3 暂存区1」这一行"
 
 
 def test_doc_states_pose_replaces_not_adds(doc_text):

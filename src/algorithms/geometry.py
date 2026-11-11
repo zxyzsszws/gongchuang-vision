@@ -1,22 +1,25 @@
-"""平面几何：像素 → 车体毫米 → 场地毫米（纯函数层，无硬件依赖）。
+"""平面几何：相似变换、单应、以及相机外参的加载（纯函数层）。
 
-为什么必须两层换算：
-- 相机固定在车上，像素先换到**车体坐标系**（mm）。只依赖安装外参，与车走到哪无关。
-- 再叠加位姿换到**场地坐标系**：dst = R(heading)·p + (x, y)。航位推算误差 ε 由此
-  进入观测，恰好满足 ``calibration.calibrate`` 的「obs = theory + ε」口径。
+## v2.0.0 里这层的职责变小了
 
-**外参不可省**（这条曾被我误判，记录在此防复发）：``calibrate`` 的修正量
-``delta = w·(theory − obs)`` 依赖 obs 的**绝对坐标系**，不是平移不变的；只有
-``residual`` 与 ``dhead`` 是相对量。把像素直接当毫米（或只做尺度缩放）会得到
-方向/原点都错位的观测，算出的 delta 可以达到几米，而残差闸门与角度闸门未必能拦。
-故：
-- 有安装外参 → 走 ``image_to_robot`` 精确换算（推荐，赛前用标定工具一次标定）。
-- 无外参 → live 模式**拒绝启动**（见 ``src/main.py``），绝不外发未校数据。
+v1.0.0 需要「像素 → 车体毫米 → 场地毫米」两层换算，因为视觉要拿观测去反推
+位姿修正量，而修正量依赖观测的绝对坐标系。v2.0.0 里位姿本身就是视觉要解算
+的未知量，不可能反过来依赖它，所以换算**只做一层**：像素 → 车身毫米。
 
-单应（Homography）与相似（Similarity）共用 ``apply`` 接口，可互换。
+因此 ``compose_with_pose``（车体毫米 → 场地毫米）已被删除，它只会诱使后来者
+又把位姿循环地喂回感知层。位姿解算在 ``algorithms/localize.py``，那里的输入
+是车身毫米坐标，输出是场地坐标下的位姿。
+
+## 两种外参形式
+
+- ``Similarity``：尺度 + 旋转 + 平移。相机光轴垂直地面、镜头无明显透视时够用，
+  两点实测即可标定。
+- ``Homography``：3×3 单应。相机有倾角或视场边缘畸变明显时更准，需四点以上。
+
+两者都提供 ``apply(pt)``，可互换。
 """
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 import yaml
@@ -26,8 +29,8 @@ import yaml
 class Similarity:
     """相似变换（尺度 + 旋转 + 平移）：dst = scale·R(rot)·src + (tx, ty)。
 
-    像素→车体毫米的缺省外参形式：scale 由「已知尺寸物」或环半径给，rot_deg 为
-    相机相对车体的安装角（图像 y 朝下，故通常需要 180° 或 ±90° 的翻转量级）。
+    像素→车身毫米的缺省外参形式：scale 由「已知尺寸物」实测，rot_deg 为相机
+    相对车体的安装角（图像 y 朝下，故通常需要 180° 或 ±90° 的翻转量级）。
     """
     scale: float = 1.0
     rot_deg: float = 0.0
@@ -41,7 +44,7 @@ class Similarity:
         return (c * x - s * y + self.tx, s * x + c * y + self.ty)
 
     def invert(self) -> "Similarity":
-        """逆变换：车体毫米 → 像素（标定时由「已知 mm 点」反查图像位置用）。"""
+        """逆变换：车身毫米 → 像素（标定时由「已知 mm 点」反查图像位置用）。"""
         if self.scale == 0:
             raise ZeroDivisionError("similarity scale must be non-zero")
         rot = -self.rot_deg
@@ -90,7 +93,7 @@ def fit_similarity(src, dst) -> Similarity:
 
 
 def fit_homography(src, dst) -> Homography:
-    """标准 DLT（≥4 对点）：棋盘格标定产物可直接落成 Homography。"""
+    """标准 DLT（≥4 对点）：四点标定产物可直接落成 Homography。"""
     src_arr, dst_arr = np.asarray(src, float), np.asarray(dst, float)
     if src_arr.shape != dst_arr.shape or src_arr.ndim != 2 or src_arr.shape[0] < 4:
         raise ValueError("fit_homography needs >=4 paired points of equal shape")
@@ -105,43 +108,11 @@ def fit_homography(src, dst) -> Homography:
     return Homography(h)
 
 
-def compose_with_pose(pose, points):
-    """车体毫米 → 场地毫米：dst = R(pose.heading)·p + (pose.x, pose.y)。
-
-    这是航位推算误差进入观测的唯一入口：pose 带 ε 时 dst ≈ theory + ε。
-    """
-    a = math.radians(pose.heading)
-    ca, sa = math.cos(a), math.sin(a)
-    return [(ca * float(x) - sa * float(y) + pose.x,
-             sa * float(x) + ca * float(y) + pose.y) for x, y in points]
-
-
-def estimate_scale_from_tri(px_tri, field_tri) -> float:
-    """用三色环**环半径**估计 mm/px（对旋转/平移不敏感，不需要已知位姿）。
-
-    比「环间距」更稳：半径是单个环的局部量，分组间距受透视/形变影响更大。
-    取三环半径均值与理论半径均值之比；退化时抛 ValueError。
-    """
-    px_r = (px_tri.left.radius + px_tri.middle.radius + px_tri.right.radius) / 3.0
-    f = field_tri
-    mm_r = (f.left.radius + f.middle.radius + f.right.radius) / 3.0
-    if px_r <= 1e-9 or mm_r <= 1e-9:
-        raise ValueError("estimate_scale_from_tri: degenerate radius")
-    return mm_r / px_r
-
-
 @dataclass(frozen=True)
 class CameraCalib:
-    """像素 → 车体毫米的外参（+ 尺度自估开关）。"""
-    image_to_robot: object = Similarity()
-    auto_scale_from_tri: bool = False
+    """像素 → 车身毫米的外参。"""
 
-    def with_auto_scale(self, px_tri, field_tri) -> "CameraCalib":
-        """按实测环半径重估尺度（仅相似变换有意义；单应自带透视尺度）。"""
-        if not self.auto_scale_from_tri or not isinstance(self.image_to_robot, Similarity):
-            return self
-        scale = estimate_scale_from_tri(px_tri, field_tri)
-        return CameraCalib(replace(self.image_to_robot, scale=scale), True)
+    image_to_robot: object = Similarity()
 
 
 def load_camera_calib(path: str) -> CameraCalib:
@@ -149,22 +120,22 @@ def load_camera_calib(path: str) -> CameraCalib:
 
     两种写法（二选一）：
         image_to_robot: {scale_mm_per_px: 1.2, rot_deg: 180.0, tx_mm: -320, ty_mm: -240}
-        homography: [[...], [...], [...]]      # 棋盘格/四点标定，3×3
-    可选 ``auto_scale_from_tri: true``：忽略 scale_mm_per_px，用三色环半径自估
-    （距离变化自适应，赛前只需量安装角与偏移）。
+        homography: [[...], [...], [...]]      # 四点标定，3×3
+
+    车身坐标系原点必须是**机械臂底座中心在地面的投影**，不是相机光轴
+    （文档附录二第四节）；两者差几十毫米且不会报错。
     """
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
-    auto = bool(raw.get("auto_scale_from_tri", False))
     if "homography" in raw:
         h = np.asarray(raw["homography"], float)
         if h.shape != (3, 3):
             raise ValueError(f"{path}: homography must be 3x3, got {h.shape}")
-        return CameraCalib(Homography(h), auto)
+        return CameraCalib(Homography(h))
     if "image_to_robot" not in raw:
         raise ValueError(f"{path}: need either 'image_to_robot' or 'homography'")
     t = raw["image_to_robot"]
     return CameraCalib(Similarity(float(t.get("scale_mm_per_px", 1.0)),
                                   float(t.get("rot_deg", 0.0)),
                                   float(t.get("tx_mm", 0.0)),
-                                  float(t.get("ty_mm", 0.0))), auto)
+                                  float(t.get("ty_mm", 0.0))))

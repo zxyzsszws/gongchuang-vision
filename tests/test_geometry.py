@@ -1,18 +1,17 @@
-"""几何变换单测：相似/单应的拟合与逆变换、位姿合成、尺度自估。"""
+"""几何层测试：相似/单应的拟合与逆变换、相机外参加载。
+
+v2.0.0 删除了 ``compose_with_pose``（车体毫米→场地毫米）：位姿现在是视觉自己
+解算的未知量，再让它反过来喂给感知层会形成循环依赖。位姿解算见
+``tests/test_localize.py``。
+"""
 import math
 
 import numpy as np
 import pytest
 
 from src.algorithms.geometry import (CameraCalib, Homography, Similarity,
-                                     compose_with_pose, estimate_scale_from_tri,
                                      fit_homography, fit_similarity,
                                      load_camera_calib)
-from src.algorithms.types import Pose, RingObs, TriRingObs
-
-
-def _tri(centers, radius=20.0):
-    return TriRingObs(*[RingObs(c, radius) for c in centers])
 
 
 # ---------- Similarity ----------
@@ -69,91 +68,21 @@ def test_fit_homography_requires_four_points():
         fit_homography([(0, 0), (1, 0), (1, 1)], [(0, 0), (1, 0), (1, 1)])
 
 
-# ---------- 位姿合成：误差进入观测的唯一入口 ----------
-
-def test_compose_with_pose_is_rigid_and_carries_error():
-    # 位姿带误差 ε 时，合成结果 = 真值 + ε（校准算法的 obs = theory + ε 口径）
-    truth = Pose(1000.0, 200.0, 0.0)
-    err = Pose(30.0, -12.0, 0.0)
-    drift = Pose(truth.x + err.x, truth.y + err.y, truth.heading + err.heading)
-    pts = [(0.0, 100.0), (50.0, -20.0)]
-    got = compose_with_pose(drift, pts)
-    base = compose_with_pose(truth, pts)
-    # 纯平移误差时，观测与理论之差必须**精确**等于 ε（这是校准能回收位姿的前提）
-    for (bx, by), (gx, gy) in zip(base, got):
-        assert abs((gx - bx) - err.x) < 1e-9
-        assert abs((gy - by) - err.y) < 1e-9
-    # 带航向误差时：差值 = ε_xy + [R(h+εh) − R(h)]·p（显式公式验证，模长不守恒）
-    eh = 1.5
-    drift_h = Pose(truth.x + err.x, truth.y + err.y, truth.heading + eh)
-    got_h = compose_with_pose(drift_h, pts)
-    for (px, py), (bx, by), (gx, gy) in zip(pts, base, got_h):
-        c0, s0 = math.cos(0.0), math.sin(0.0)
-        c1, s1 = math.cos(math.radians(eh)), math.sin(math.radians(eh))
-        want_x = (c1 * px - s1 * py) - (c0 * px - s0 * py) + err.x
-        want_y = (s1 * px + c1 * py) - (s0 * px + c0 * py) + err.y
-        assert abs((gx - bx) - want_x) < 1e-9
-        assert abs((gy - by) - want_y) < 1e-9
-    # 车体原点处（p=0）差值恒等于 ε，与航向误差无关 —— 校准原点口径的锚点
-    origin_gap = compose_with_pose(Pose(err.x, err.y, 77.0), [(0.0, 0.0)])[0]
-    assert abs(origin_gap[0] - err.x) < 1e-9 and abs(origin_gap[1] - err.y) < 1e-9
-
-
-def test_compose_with_pose_rotates_heading():
-    # heading=90° 时车体 +x 应映射到场地 +y
-    (x, y), = compose_with_pose(Pose(0, 0, 90.0), [(100.0, 0.0)])
-    assert abs(x) < 1e-9 and abs(y - 100.0) < 1e-9
-
-
-# ---------- 尺度自估 ----------
-
-def test_estimate_scale_from_tri_uses_radii():
-    # 已知环半径 20mm，图像里量到 10px → 2mm/px
-    px = _tri([(0, 0), (100, 0), (200, 0)], radius=10.0)
-    field = _tri([(0, 0), (300, 0), (600, 0)], radius=20.0)
-    assert abs(estimate_scale_from_tri(px, field) - 2.0) < 1e-9
-
-
-def test_estimate_scale_from_tri_is_rotation_invariant():
-    base = estimate_scale_from_tri(_tri([(0, 0), (0, 100), (0, 200)], radius=10.0),
-                                   _tri([(0, 0), (300, 0), (600, 0)], radius=20.0))
-    assert abs(base - 2.0) < 1e-9
-
-
-def test_estimate_scale_from_tri_rejects_degenerate():
-    with pytest.raises(ValueError):
-        estimate_scale_from_tri(_tri([(0, 0), (1, 0), (2, 0)], radius=0.0),
-                                _tri([(0, 0), (300, 0), (600, 0)], radius=20.0))
-
-
-def test_camera_calib_auto_scale_only_affects_similarity():
-    px = _tri([(0, 0), (100, 0), (200, 0)], radius=10.0)
-    field = _tri([(0, 0), (300, 0), (600, 0)], radius=20.0)
-    calib = CameraCalib(Similarity(scale=1.0), auto_scale_from_tri=True)
-    out = calib.with_auto_scale(px, field)
-    assert abs(out.image_to_robot.scale - 2.0) < 1e-9
-    # 关闭自估 → 原样返回
-    off = CameraCalib(Similarity(scale=1.0), auto_scale_from_tri=False)
-    assert off.with_auto_scale(px, field).image_to_robot.scale == 1.0
-    # 单应透视为自带尺度，不参与自估
-    hom = CameraCalib(Homography(np.eye(3)), auto_scale_from_tri=True)
-    assert hom.with_auto_scale(px, field) is hom
-
-
 # ---------- yaml 加载 ----------
 
 def test_load_camera_calib_similarity(tmp_path):
     p = tmp_path / "calib.yaml"
-    p.write_text("image_to_robot: {scale_mm_per_px: 1.5, rot_deg: 180, tx_mm: -480, ty_mm: -360}\n"
-                 "auto_scale_from_tri: true\n", encoding="utf-8")
+    p.write_text("image_to_robot: {scale_mm_per_px: 1.5, rot_deg: 180, tx_mm: -480, ty_mm: -360}\n",
+                 encoding="utf-8")
     calib = load_camera_calib(str(p))
     assert isinstance(calib.image_to_robot, Similarity)
-    assert calib.image_to_robot.scale == 1.5 and calib.auto_scale_from_tri is True
+    assert calib.image_to_robot.scale == 1.5
 
 
 def test_load_camera_calib_homography(tmp_path):
     p = tmp_path / "calib.yaml"
-    p.write_text("homography:\n  - [1, 0, 5]\n  - [0, 1, 7]\n  - [0, 0, 1]\n", encoding="utf-8")
+    p.write_text("homography:\n  - [1, 0, 5]\n  - [0, 1, 7]\n  - [0, 0, 1]\n",
+                 encoding="utf-8")
     calib = load_camera_calib(str(p))
     assert isinstance(calib.image_to_robot, Homography)
     x, y = calib.image_to_robot.apply((1, 2))
@@ -175,3 +104,20 @@ def test_example_calib_file_loads():
     """仓库自带的示例外参必须始终可解析（结构回归）。"""
     calib = load_camera_calib("config/camera_calib.example.yaml")
     assert isinstance(calib.image_to_robot, Similarity)
+
+
+def test_example_calib_is_identity_ish_and_monotonic():
+    """示例外参的尺度必须为正且合理，否则符号搞反会让整幅图像左右翻转。"""
+    calib = load_camera_calib("config/camera_calib.example.yaml")
+    s = calib.image_to_robot
+    assert 0.1 < s.scale < 20.0
+    # 相邻像素映射到相邻毫米，且距离随像素距离等比放大
+    a, b = s.apply((0, 0)), s.apply((100, 0))
+    assert abs(math.hypot(b[0] - a[0], b[1] - a[1]) - 100.0 * s.scale) < 1e-6
+
+
+def test_camera_calib_has_no_auto_scale():
+    """v1.0.0 的 auto_scale_from_tri 已删除：尺度由标定固定，不再用三色环自估。"""
+    calib = CameraCalib()
+    assert not hasattr(calib, "auto_scale_from_tri")
+    assert not hasattr(calib, "with_auto_scale")

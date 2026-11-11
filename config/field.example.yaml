@@ -1,11 +1,54 @@
-# 三色环理论环心：相邻间距 150mm，须落在 ring.spacing_min/max_mm (120..200) 分组闸内
-# （final-review F6：原 500/600/700 间距 100 永远过不了 detect_tri_ring 的间距门）。
-tri:
-  left:   {center: [450, 300], radius: 20}
-  middle: {center: [600, 300], radius: 20}
-  right:  {center: [750, 300], radius: 20}
-  base_angle_deg: 0.0
-rings:
-  - {center: [1200, 300], radius: 60, label: 1}
-  - {center: [1200, 600], radius: 60, label: 2}
-  - {center: [1200, 900], radius: 60, label: 3}
+# 场地坐标系（文档附录二）：
+#   原点 = 开赛停车位上机械臂底座中心在地面的投影
+#   x 轴正方向 = 开赛时车头方向；y 轴正方向 = 车头左侧；角度俯视逆时针为正
+#
+# 每组「参考靶」由三个共线摆放的同心圆靶组成，用于视觉反解车身位姿。
+# 单靶无法定出朝向（圆关于自身中心旋转对称），必须三点共线才可解。
+#
+# entry_pose：车正常停在该区域作业位置时的**标称**位姿，赛前用尺子量一次。
+# 它只用于消解三个共线靶的 180° 镜像歧义（两个候选解相差 180°，车实际停偏
+# 几十毫米、转头几度都不影响判断）。不写则默认 (0,0,0)，是最容易出错的地方，
+# 上线前务必填写。
+#
+# 注意：以下坐标为示例值，赛前必须实测替换。三靶间距越大，朝向解算越准
+# （间距 600mm 时约 0.06°，间距 300mm 时约 0.12°）。
+
+reference_groups:
+  # 粗加工区：三个靶沿 x 轴排列，间距 300mm；车从 y 较大一侧靠近，车头朝 −y
+  rough:
+    entry_pose: {x: 1500, y: 1000, heading_deg: 270}
+    targets:
+      - {label: 1, center: [1200, 600], radius: 60, rings: 5}
+      - {label: 2, center: [1500, 600], radius: 60, rings: 5}
+      - {label: 3, center: [1800, 600], radius: 60, rings: 5}
+
+  # 暂存区：另一处的三个靶，结构完全相同（故必须靠去向提示 0x0005 区分）
+  # 车从 y 较小一侧靠近，车头朝 +y
+  staging:
+    entry_pose: {x: 1500, y: 2000, heading_deg: 90}
+    targets:
+      - {label: 1, center: [1200, 2400], radius: 60, rings: 5}
+      - {label: 2, center: [1500, 2400], radius: 60, rings: 5}
+      - {label: 3, center: [1800, 2400], radius: 60, rings: 5}
+
+# 原料区转盘：圆心场地坐标、工位回转半径、工位数（等间隔）
+turntable:
+  center: [600, 1200]
+  station_radius: 150
+  station_count: 3
+
+# 开赛停车位（电控起点；视觉的场地原点即定义在此处的机械臂底座中心投影）
+start:
+  pose: {x: 0, y: 0, heading_deg: 0}
+
+# 各区域的标称停车位姿。**只在 sim 里用来生成一条合理的行驶路线**，
+# 让模拟车真的开到转盘和参考靶附近而不是沿一条直线开到场外。
+# 真实系统里路径规划与运动控制全部由机器人主控负责，视觉不读这张表。
+region_poses:
+  material: {x: 600, y: 1600, heading_deg: 270}   # 转盘在 y=1200，从 +y 侧靠近
+  rough: {x: 1500, y: 1000, heading_deg: 270}
+  staging: {x: 1500, y: 2000, heading_deg: 90}
+
+# 码垛高度（暂存区第一层与第二层的高度差），供电控控制机械臂升降
+palletizing:
+  layer_height_mm: 40

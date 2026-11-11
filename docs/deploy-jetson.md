@@ -40,19 +40,22 @@ python3 -m pip install --user "pytest>=7,<9"
 ```bash
 cd /home/uav/gongchuang-vision
 
-python3 -m pytest -q                 # 上次实测 85 passed（在任意 cwd 下均可）
-python3 -m src.main --mode sim       # 全流程到 DONE，退出码 0
+python3 -m pytest -q                 # 在任意 cwd 下均可
+python3 -m src.main --mode sim --max-seconds 40
 ```
 
-实测结果（2026-10-31，协议 v0.1 时期）：
+实测结果（2026-10-31，协议还是 v0.1 时期的旧命令集）：
 - pytest 8.4.2：**85 passed**（项目根与 `/tmp` 两种 cwd 均通过）
 - pytest 6.2.5：**85 passed**（仅 `pythonpath` 选项警告，已由 conftest 兜底）
 - `--mode sim`：`IDLE → … → DONE`，两次 `CAL_APPLIED`，退出码 0
 
 > **⚠ 待复测（协议 v2.0.0）**：串口帧格式仍为 `A5 | data_length(2B) | seq | CRC8 |
-> cmd_id(2B) | data | CRC16`，但命令码语义已按 `docs/protocol-v2.0.0.md` 变更
-> （视觉只输出测量结果，删除 0x0201/0x0202/0x0203）。本地 Windows 全量测试
-> **132 passed**。目标机当时不可用，**尚未在 Jetson 上复测**；下次可连时先跑
+> cmd_id(2B) | data | CRC16`，但命令集已按 `docs/protocol-v2.0.0.md` 换掉
+> （视觉只输出测量结果，删除 0x0201/0x0202/0x0203；状态机收缩为
+> `SCANNING`/`SERVICE`/`SAFESTOP`，不再有 `DONE`，所以 sim 会一直跑到时限）。
+> 本地 Windows 全量测试 **226 passed**，`--mode sim --max-seconds 40` 得到
+> `final_state=SERVICE poses=77`、车真值坐标始终落在场地 0~1500 / 0~2000mm 内。
+> 目标机当时不可用，**尚未在 Jetson 上复测**；下次可连时先跑
 > `python3 -m pytest -q` 与 `--mode sim` 确认，再谈串口联调。
 
 ## 4. 尚未完成（上赛场前必须做）
@@ -65,7 +68,7 @@ python3 -m src.main --mode sim       # 全流程到 DONE，退出码 0
    放到项目内（如 `models/wechat_qr/`），并设置 `camera.qr_model_dir`。
 2. **无相机设备**：`/dev/video*` 当前为空（未插相机），`live` 模式无法验证。
 3. **相机外参未标定**：`camera_calib_file` 指向的仍是示例文件。现场需按
-   README §5 用 `tools/calibrate_camera.py` 实测标定。
+   README §6 用 `tools/calibrate_camera.py` 实测标定。
 4. **串口未接**：`serial.port` 默认 `COM3`（Windows 命名），Linux 下应为
    `/dev/ttyTHS1` 或 `/dev/ttyUSB0` 之类，需按实际主控连接确认。**协议 v2.0.0 把
    分工改为「视觉只测量、电控全权规划与控制」**，联调前须把

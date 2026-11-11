@@ -1,85 +1,71 @@
-"""live/replay 视觉感知：相机帧 → 检测 → 坐标换算 → FSM 的 perceive 键。
+"""live/replay 视觉感知：相机帧 → 检测 → 车速体毫米，供 FSM 使用。
 
-链路（关键：让校准算法拿到**场地毫米**观测，而不是像素）：
+## 坐标链路（v2.0.0）
 
-    pixel ──[image_to_robot]──> 车体毫米 ──[当前位姿]──> 场地毫米
+    pixel ──[相机外参 image_to_robot]──> 车身毫米
 
-- ``image_to_robot``：相机安装外参，来自 ``camera_calib_file``。尺度可用
-  ``auto_scale_from_tri`` 由三色环半径自估（距离自适应），安装角/偏移量尺可得。
-- 位姿由 main 循环每拍注入 ``perceive.pose``，观测因此带「上报−真值」误差 ε，
-  与 ``calibration.calibrate`` 的符号约定一致。
-- **无外参时 tri() 返回 None**（宁可跳过校准，也不发方向错位的修正量）。
+**只做一次换算，停在车身坐标系。** v1.0.0 里还要再叠加「当前位姿」换到场地
+坐标系，那是因为当时视觉要用观测反推位姿修正量；v2.0.0 里位姿正是视觉自己要
+解算的东西，不可能反过来依赖它。所以这里换到车身毫米就交出去，由
+``algorithms/localize.py`` 用三个靶解出车在场地中的位姿。
 
-三色环在**像素域**分组（间距门限是像素），换算后交给校准；数字环换算后供
-放置位置校核（Phase-4 精细偏移的输入）。
+这个区别很关键：它意味着**相机外参只需标定一次**，与车走到哪无关；也意味着
+外参里的平移量必须按「机械臂底座中心在地面的投影」为原点标定，而不是相机
+光轴（文档附录二第四节）。
+
+## 无外参时的行为
+
+``targets()`` 返回 None，FSM 因此不发位姿（宁可让电控继续用里程推算，也不发
+方向错位的测量结果）。``qr()`` 不受影响，可以正常扫码。
 """
-from ..algorithms.geometry import compose_with_pose
-from ..algorithms.ring_detect import detect_rings, detect_tri_ring
-from ..algorithms.types import RingObs, TriRingObs
+import itertools
+import math
+
+from ..algorithms.ring_detect import detect_targets, order_targets
+from ..algorithms.types import TargetObs as DomainTargetObs
+from ..algorithms.types import TargetSetObs
+
+# 选靶时最多参与组合的候选数：按「离预测最近」截断，避免画面里圆一多组合数爆炸。
+_MAX_CANDIDATES = 8
+# 挑出的靶离预测位置的最大允许偏差（mm）的缺省值；配置里可用
+# ``target.max_match_mm`` 覆盖。超过就认为画面里没有当前区域的靶。
+# 参考量级：两组靶相距约 1800mm，而电控停位偏差通常在几十毫米量级（里程漂移
+# 8mm/m，走十米才 80mm），500mm 足够宽松，又能挡住「拿错组」。
+_DEFAULT_MAX_MATCH_MM = 500.0
 
 
 class VisionPerceive:
-    """把相机帧包装成 FSM 需要的 ``qr / tri / rings`` 三个可调用键。"""
+    """把相机帧包装成 FSM 需要的 ``qr / targets / turntable`` 三个可调用键。"""
 
-    def __init__(self, cam, cfg, calib=None, field=None):
+    KEYS = ("qr", "targets", "turntable")
+
+    def __init__(self, cam, cfg, calib=None, field=None, color_cfg=None):
         self._cam = cam
         self._cfg = cfg
         self._calib = calib
         self._field = field
-        self.pose = None            # main 每拍注入（滤波后 Pose）
+        self._color_cfg = color_cfg or (cfg.get("color") or {})
         self._frame = None
-        self._rings = None
-        ring_cfg = cfg.get("ring") or {}
-        self._geo = ring_cfg.get("geo")
-        self._hough = ring_cfg.get("hough")
-        sr = ring_cfg.get("search_radius")
-        self._search = (float(sr[0]), float(sr[1])) if sr else None
-        # 三色环分组门限**以像素计**（现场对着实拍画面标一次）；缺省沿用旧键名，
-        # 兼容历史配置与回放脚本。
-        self._spacing = (float(ring_cfg.get("spacing_px_min",
-                                            ring_cfg.get("spacing_min_mm", 120))),
-                         float(ring_cfg.get("spacing_px_max",
-                                            ring_cfg.get("spacing_max_mm", 200))))
-        self._collinear = float(ring_cfg.get("collinear_tol_deg", 5))
-        self._ratio = float(ring_cfg.get("max_spacing_ratio", 2.0))
-        self._radius_tol = float(ring_cfg.get("radius_tol", 0.25))
+        self._targets_cache = None
+        target_cfg = cfg.get("target") or {}
+        self._target_cfg = target_cfg
 
     # ---------- 帧与检出 ----------
 
     def _read(self):
-        """取最新帧；新帧才让圆环缓存失效（tri/rings 共享一次霍夫检出）。"""
+        """取最新帧；新帧才让检测缓存失效（targets/turntable 共享一次检出）。"""
         ok, img = self._cam.read()
         if ok and img is not None:
-            self._frame, self._rings = img, None
+            self._frame, self._targets_cache = img, None
         return self._frame
 
     def _detect(self):
         img = self._read()
         if img is None:
             return []
-        if self._rings is None:
-            self._rings = detect_rings(img, self._geo, self._hough, self._search)
-        return self._rings
-
-    # ---------- 坐标换算 ----------
-
-    def _to_field(self, px_pt, calib):
-        rb = calib.image_to_robot.apply(px_pt)
-        return compose_with_pose(self.pose, [rb])[0]
-
-    def _calib_for(self, px_tri):
-        """本次换算用的外参；开启自估尺度时按本帧环半径更新。"""
-        if self._calib is None:
-            return None
-        if self._field is None or not self._calib.auto_scale_from_tri:
-            return self._calib
-        try:
-            return self._calib.with_auto_scale(px_tri, self._field.tri)
-        except ValueError:
-            return self._calib
-
-    def has_extrinsics(self) -> bool:
-        return self._calib is not None
+        if self._targets_cache is None:
+            self._targets_cache = detect_targets(img, self._target_cfg)
+        return self._targets_cache
 
     # ---------- FSM 接口 ----------
 
@@ -93,32 +79,116 @@ class VisionPerceive:
         model_dir = (self._cfg.get("camera") or {}).get("qr_model_dir")
         return decode_qr(img, model_dir)
 
-    def tri(self):
-        rings = self._detect()
-        px_obs = detect_tri_ring(rings, self._spacing, self._collinear,
-                                 self._ratio, self._radius_tol)
-        if px_obs is None or self.pose is None:
-            return None
-        calib = self._calib_for(px_obs)
-        if calib is None:
-            return None  # 无外参：不发错修正量，FSM 会走 CAL_SKIPPED 降级
-        return TriRingObs(
-            RingObs(self._to_field(px_obs.left.center, calib), px_obs.left.radius, kind="tri"),
-            RingObs(self._to_field(px_obs.middle.center, calib), px_obs.middle.radius, kind="tri"),
-            RingObs(self._to_field(px_obs.right.center, calib), px_obs.right.radius, kind="tri"),
-        )
+    def has_extrinsics(self) -> bool:
+        return self._calib is not None
 
-    def rings(self):
-        """全部环换算到场地毫米；无位姿/无外参时退回像素（仅调试与日志）。
+    def targets(self, region=None):
+        """当前区域三个参考靶在**车身坐标系**（mm）下的观测。
 
-        注意自动尺度（auto_scale_from_tri）：数字环半径与三色环不同，不能借用三色环
-        自估的尺度，故此处只用配置里的静态 scale；精细放置属 Phase-4，另行处理。
+        三靶不全、不共线、或没有相机外参时返回 None —— 这几种情况下位姿解不
+        出来或不唯一，FSM 会因此不发 0x0003。
+
+        ``region`` 用来**选哪三个**：画面里可能同时混着另一组靶（车正好停两组
+        之间）以及转盘上的圆。给了区域就用该区域的标称入场位姿预测三个靶在车身
+        坐标系里该在什么位置，按距离挑最贴合的；预测只决定「挑哪三个」，位姿仍然
+        完全由解算得出，不依赖这个先验。
         """
-        rings = self._detect()
-        if self.pose is None or self._calib is None:
-            return list(rings)
-        return [RingObs(self._to_field(r.center, self._calib), r.radius, r.label, kind=r.kind)
-                for r in rings]
+        if self._calib is None:
+            return None
+        px_obs = self._detect()
+        if len(px_obs) < 3:
+            return None
+
+        body = []
+        for t in px_obs:
+            bx, by = self._calib.image_to_robot.apply(t.center)
+            body.append((bx, by, t.ring_count))
+
+        picked = self._pick_three(body, region)
+        if picked is None:
+            return None
+        pts = [DomainTargetObs((bx, by), ring_count=n) for bx, by, n in picked]
+        ordered, collinear = order_targets(pts)
+        return TargetSetObs(tuple(ordered), collinear=collinear)
+
+    # ---------- 选靶 ----------
+
+    def _pick_three(self, body, region):
+        """从若干候选圆心里挑出属于当前区域的三个靶；挑不出返回 ``None``。
+
+        优先按区域预测位置挑（能排除另一组靶与转盘上的圆）；没有区域或没有场地图
+        时退回「圈数多、离车近」的置信度排序。
+
+        挑法是「在所有三元组里，取与三个预测位置整体最贴合的那一组」，贴合程度用
+        双向最近距离之和衡量：预测点到三元组的距离、三元组到预测点的距离，两边都
+        要小。只按「预测点各取最近候选」挑会在一侧预测偏得较多时把另一组的靶拉
+        进来；只按「全局最近的三个候选」挑又可能三个全落在同一个预测点附近（靶旁
+        多出一圈伪影时）。双向和同时要求「每个靶都有着落」和「每个预测点都被占
+        住」，两种退化都能挡住。
+
+        最后还要过一道**贴合门限**：挑出的三个靶只要有一个离它的预测位置超过
+        ``target.max_match_mm``，就说明画面里根本没有当前区域的靶（车开过头、或
+        提示给错），返回 None 让 FSM 不发位姿。这一步不能省——三个共线点用相似
+        变换可以精确映射到任意另外三个共线点，**残差恒为 0，拦不住拿错组**，只能
+        在选靶阶段用位置先验挡。
+
+        预测只决定「挑哪三个」，位姿仍然完全由解算得出，不依赖这个先验。
+        """
+        predicted = self._predicted_body_points(region)
+        if predicted is None:
+            return sorted(body, key=lambda t: (-t[2], -(t[0] ** 2 + t[1] ** 2)))[:3]
+
+        def near_predicted(item):
+            return min(math.hypot(item[0] - px, item[1] - py) for px, py in predicted)
+
+        # 先按「离预测最近」截到至多 8 个候选，三元组最多 56 种，20Hz 下毫无压力；
+        # 不截的话画面里圆一多组合数会爆。
+        cands = sorted(body, key=near_predicted)[:_MAX_CANDIDATES]
+
+        best, best_cost, best_far = None, None, 0.0
+        for combo in itertools.combinations(cands, 3):
+            to_pred = [near_predicted(c) for c in combo]
+            to_combo = [min(math.hypot(c[0] - px, c[1] - py) for c in combo)
+                        for px, py in predicted]
+            cost = sum(to_pred) + sum(to_combo)
+            if best_cost is None or cost < best_cost:
+                best, best_cost, best_far = combo, cost, max(to_pred)
+
+        if best is None or best_far > self._max_match_mm():
+            return None
+        return list(best)
+
+    def _max_match_mm(self):
+        """选靶时允许的最大预测偏差；配置里可覆盖（现场可放宽到 800mm）。"""
+        return float(self._target_cfg.get("max_match_mm",
+                                          _DEFAULT_MAX_MATCH_MM))
+
+    def _predicted_body_points(self, region):
+        """用该区域的标称入场位姿，预测三个靶在车身坐标系下的位置（mm）。"""
+        if self._field is None or region is None:
+            return None
+        group = self._field.group_for_region(region)
+        if group is None:
+            return None
+        pose = group.entry_pose
+        a = math.radians(pose.heading)
+        ca, sa = math.cos(a), math.sin(a)
+        out = []
+        for t in group.targets:
+            dx = t.center[0] - pose.x
+            dy = t.center[1] - pose.y
+            out.append((ca * dx + sa * dy, -sa * dx + ca * dy))
+        return out
+
+    def turntable(self, region=None):
+        """转盘在车身坐标系下的观测。
+
+        真正的转盘识别（圆心、半径、三工位角度与颜色）还需要按颜色分割与
+        拟合圆，当前版本尚未实现，返回 None 让 FSM 停发 0x0004。
+        这里显式返回 None 而不是编造数据：发一份假的转盘模型会让电控按错的
+        伸出时刻去取料，比不取更糟。
+        """
+        return None
 
     def __getitem__(self, key):
         return getattr(self, key)
