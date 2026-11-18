@@ -66,7 +66,7 @@ class MockMcu:
     def __init__(self, drift_mm_per_m=8.0, drift_deg_per_m=0.1,
                  route=DEFAULT_ROUTE,
                  leg_mm=1200.0, speed_mm_s=1200.0, waypoints=None,
-                 apply_pose=False, arm_l_mm=600.0, arm_h_mm=300.0,
+                 apply_pose=False, arm_l_mm=600.0,
                  exec_s=0.2, use_done=True):
         self.drift_mm_per_m = drift_mm_per_m
         self.drift_deg_per_m = drift_deg_per_m
@@ -83,7 +83,6 @@ class MockMcu:
         self.waypoints = list(waypoints) if waypoints else None
 
         self.arm_l_mm = float(arm_l_mm)
-        self.arm_h_mm = float(arm_h_mm)
         self.exec_s = float(exec_s)
         self.use_done = bool(use_done)
 
@@ -242,8 +241,7 @@ class MockMcu:
         """
         self._arm_seq = self._arm_seq % 255 + 1
         alpha01 = int(round(self.est_h * 10.0)) & 0xFFFF
-        data = struct.pack("<HHHb", int(round(self.arm_l_mm)),
-                           int(round(self.arm_h_mm)), alpha01,
+        data = struct.pack("<HHb", int(round(self.arm_l_mm)), alpha01,
                            int(target_id) & 0xFF)
         with self._lock:
             self._tx.append(Frame(seq=self._arm_seq, cmd_id=CMD_ARM_STATE,

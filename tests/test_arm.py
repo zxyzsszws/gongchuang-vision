@@ -11,7 +11,8 @@ import pytest
 from src.algorithms.arm import (FLAG_SWEEP, FLAG_USABLE, GRADE_BEST,
                                 GRADE_BAD, OUTCOME_MASK, OUTCOME_NO_TARGET,
                                 OUTCOME_OK, OUTCOME_UNREACHABLE, ArmState,
-                                encode_status, no_target_solution, solve_arm)
+                                encode_status, mm_per_px_from_ring,
+                                no_target_solution, scale_target, solve_arm)
 
 
 def end_effector(l, d, alpha_deg):
@@ -126,6 +127,43 @@ def test_sweep_flag_when_alpha_passes_90_degrees():
 
 
 def test_arm_state_carries_units():
-    st = ArmState(l_mm=600.0, h_mm=300.0, alpha_deg=12.3, seq=7)
-    assert st.l_mm == 600.0 and st.h_mm == 300.0
+    """臂状态只带 l 与 α：尺度由视觉自己从靶外圈量，不需要电控报相机高度。"""
+    st = ArmState(l_mm=600.0, alpha_deg=12.3, seq=7)
+    assert st.l_mm == 600.0
     assert st.alpha_deg == 12.3 and st.seq == 7
+    assert not hasattr(st, "h_mm")
+
+
+# ---------- 尺度：从参考靶外圈直径反算 ----------
+
+def test_scale_from_ring_uses_outer_diameter():
+    """外圈直径 120mm、画面里测到半径 60px → 1.0 mm/px。"""
+    assert mm_per_px_from_ring(60.0, 120.0) == pytest.approx(1.0)
+
+
+def test_scale_from_ring_inverse():
+    """反查：同一尺寸的靶在画面里越小，说明拍得越高、每像素对应的毫米越多。"""
+    near = mm_per_px_from_ring(100.0, 120.0)
+    far = mm_per_px_from_ring(50.0, 120.0)
+    assert far == pytest.approx(near * 2.0)
+
+
+def test_scale_from_ring_rejects_tiny_radius():
+    """半径只有一两像素时相对误差会被放大，宁可报错也不要给虚高精度。"""
+    with pytest.raises(ValueError):
+        mm_per_px_from_ring(1.0, 120.0)
+
+
+def test_scale_from_ring_rejects_non_positive_diameter():
+    with pytest.raises(ValueError):
+        mm_per_px_from_ring(50.0, 0.0)
+
+
+def test_scale_target_maps_pixel_offset_to_mm():
+    """靶心在画面中心右侧 40px、下方 30px，1.5 mm/px → (60, 45)mm。"""
+    assert scale_target((540.0, 510.0), (500.0, 480.0), 1.5) == pytest.approx((60.0, 45.0))
+
+
+def test_scale_target_is_zero_at_pivot():
+    """靶心正好落在转轴投影上时偏移必须是零，不允许留系统性残差。"""
+    assert scale_target((500.0, 480.0), (500.0, 480.0), 1.234) == pytest.approx((0.0, 0.0))

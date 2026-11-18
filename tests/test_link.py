@@ -185,14 +185,16 @@ def test_malformed_pose_frame_is_ignored():
 
 # ---------- 臂往返 ----------
 
-def test_request_arm_encodes_l_h_alpha():
-    m = MockMcu(route=(), arm_l_mm=580.0, arm_h_mm=310.0)
+def test_request_arm_encodes_l_alpha():
+    """0x0006 只带 l、α 与目标编号，共 5 字节；相机高度不再上报。"""
+    m = MockMcu(route=(), arm_l_mm=580.0)
     m.est_h = 27.5
     seq = m.request_arm(target_id=2)
     frame = _drain(m)[0]
     assert frame.cmd_id == CMD_ARM_STATE and frame.seq == seq
-    l_mm, h_mm, alpha01, tid = struct.unpack("<HHHb", frame.data)
-    assert (l_mm, h_mm, tid) == (580, 310, 2)
+    assert len(frame.data) == 5
+    l_mm, alpha01, tid = struct.unpack("<HHb", frame.data)
+    assert (l_mm, tid) == (580, 2)
     assert alpha01 == 275, "α 以 0.1° 传，27.5° → 275"
 
 

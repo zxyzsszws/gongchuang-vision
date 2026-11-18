@@ -389,7 +389,7 @@ class MatchFSM:
         此时**原样重发**上一帧 0x0008 而不是重新解算：电控必须静止，重算的结果
         应当相同，但重发原帧能保证逐字节一致，电控的重复识别也更简单。
         """
-        if len(f.data) != 7:
+        if len(f.data) != 5:
             self.log_events.append(("BAD_ARM_LEN", len(f.data), now))
             return
 
@@ -398,9 +398,8 @@ class MatchFSM:
             self.log_events.append(("ARM_RESEND", f.seq, now))
             return
 
-        l_mm, h_mm, alpha01, target_id = struct.unpack("<HHHb", f.data)
-        state = ArmState(l_mm=float(l_mm), h_mm=float(h_mm),
-                         alpha_deg=alpha01 / 10.0, seq=f.seq)
+        l_mm, alpha01, target_id = struct.unpack("<HHb", f.data)
+        state = ArmState(l_mm=float(l_mm), alpha_deg=alpha01 / 10.0, seq=f.seq)
         self._arm_state = state
         self._arm_seen_seq = f.seq
 

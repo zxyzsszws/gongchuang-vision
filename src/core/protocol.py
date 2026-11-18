@@ -44,7 +44,7 @@ CMD_TASK_PLAN = 0x0002
 CMD_POSE = 0x0003
 CMD_TURNTABLE = 0x0004
 CMD_REGION = 0x0005
-CMD_ARM_STATE = 0x0006      # 电控→视觉：臂状态（l、h、α）
+CMD_ARM_STATE = 0x0006      # 电控→视觉：臂状态（l、α、目标编号）
 CMD_ACK = 0x0007            # 双向：应答 / done
 CMD_ARM_SOLUTION = 0x0008   # 视觉→电控：解算结果（d、α）
 
@@ -66,7 +66,7 @@ DATA_LEN = {
     CMD_POSE: 9,
     CMD_TURNTABLE: 16,
     CMD_REGION: 1,
-    CMD_ARM_STATE: 7,
+    CMD_ARM_STATE: 5,
     CMD_ACK: 2,
     CMD_ARM_SOLUTION: 10,
 }

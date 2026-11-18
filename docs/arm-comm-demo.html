@@ -110,7 +110,7 @@
 
 <aside class="panel">
   <h1>机械臂解算 · 电控 ⇄ 视觉</h1>
-  <p class="sub">电控先把相机开到目标附近，用 <code>0x0006</code> 报来臂的 <b>l, h, α<sub>当前</sub></b>；视觉测一帧，用 <code>0x0008</code> 回 <b>d</b> 与 <b>α<sub>目标</sub></b>，电控执行完再回 <code>0x0007</code> 的 done。<br>
+  <p class="sub">电控先把相机开到目标附近，用 <code>0x0006</code> 报来臂的 <b>l, α<sub>当前</sub></b>（5 字节，不带相机高度）；视觉测一帧，用 <code>0x0008</code> 回 <b>d</b> 与 <b>α<sub>目标</sub></b>，电控执行完再回 <code>0x0007</code> 的 done。<br>
   协议 V2.1.0：<b>没有心跳</b>，只有任务计划与臂解算这两处需要应答。</p>
 
   <section>
@@ -119,12 +119,16 @@
       <input type="range" id="rl" min="350" max="800" step="5" value="600">
     </div>
     <div class="ctl">
-      <div class="lab"><span>② 臂高度 h（电控报来）</span><b id="oh">260</b></div>
-      <input type="range" id="rh" min="60" max="520" step="5" value="260">
+      <div class="lab"><span>② 当前臂角 α（电控报来）</span><b id="oa">20°</b></div>
+      <input type="range" id="ra" min="-80" max="100" step="1" value="20">
     </div>
     <div class="ctl">
-      <div class="lab"><span>③ 当前臂角 α（电控报来）</span><b id="oa">20°</b></div>
-      <input type="range" id="ra" min="-80" max="100" step="1" value="20">
+      <div class="lab"><span>③ 参考靶外圈直径（固定值，写进配置）</span><b id="od">120</b></div>
+      <input type="range" id="rd" min="60" max="240" step="5" value="120">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>④ 外圈在画面里的像素半径（视觉量出）</span><b id="orp">60</b></div>
+      <input type="range" id="rrp" min="8" max="200" step="2" value="60">
     </div>
     <div class="ctl">
       <div class="lab"><span>目标 x（向前，视觉量出）</span><b id="ox">700</b></div>
@@ -133,6 +137,10 @@
     <div class="ctl">
       <div class="lab"><span>目标 y（向右，视觉量出）</span><b id="oy">480</b></div>
       <input type="range" id="ry" min="-250" max="800" step="5" value="480">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>相机离地高度（仅侧视图演示，不进协议）</span><b id="oh">260</b></div>
+      <input type="range" id="rh" min="60" max="520" step="5" value="260">
     </div>
     <div class="ctl">
       <div class="lab"><span>目标高度 z（仅侧视图显示，不回给电控）</span><b id="oz">120</b></div>
@@ -158,6 +166,7 @@
   </section>
 
   <h2>解算</h2>
+  <div class="eq"><i>k</i><code id="eqK">—</code></div>
   <div class="eq"><i>α</i><code id="eqA">—</code></div>
   <div class="eq"><i>d</i><code id="eqD">—</code></div>
 
@@ -198,8 +207,11 @@
     <li><b>坐标系</b>：电机坐标系原点在<b>车身右侧边的中点</b>（臂的转轴），
         +x 沿车头方向，+y 指向车身外侧，车身本体落在 y &lt; 0 一侧。<br>
         <span class="cur">这条已写进协议附录二第三节。</span></li>
-    <li><b>l 是水平伸出长度</b>，比赛中<b>固定死</b>，不作为一个可调自由度；
-        h 是相机离地高度，用于把像素折算成毫米。</li>
+    <li><b>l 是水平伸出长度</b>，比赛中<b>固定死</b>，不作为一个可调自由度。</li>
+    <li><b>相机高度不由电控上报。</b>参考靶外圈直径是固定值，视觉量出它在画面里的
+        像素直径就能反算尺度（<code>mm/px = 外圈直径 ÷ 像素直径</code>），比再报一个
+        高度可靠：高度一报错，尺度就整体偏，解出来看着正常、实际差一截。<br>
+        <span class="cur">所以 0x0006 只有 l、α、target_id，共 5 字节。</span></li>
     <li><b>α 从 +x 量起、向 +y 为正</b>，是<b>绝对角</b>，不是相对当前 yaw 的增量。<br>
         <span class="cur">所以 0x0008 直接给出最终该转到的角度，电控自己算差值。</span></li>
     <li><b>d 是相对当前车身位置的位移</b>，正为前进、负为后退，单位 mm。<br>
@@ -210,7 +222,7 @@
         臂不转、升降不调——否则解出的 d 对应一个已经不存在的姿态。</li>
     <li><b>够不着就报够不着。</b>|y| &gt; l 时状态字节 bit0~1 = 1，不钳位：
         钳位会给出一个「看起来能到、实际差一截」的答案，电控抓空却不报错。</li>
-    <li><b>命令码</b>：0x0006 臂状态（电控→视觉，7B）、0x0008 解算结果
+    <li><b>命令码</b>：0x0006 臂状态（电控→视觉，5B）、0x0008 解算结果
         （视觉→电控，10B）、done 复用 0x0007（2B：<code>ack_seq</code> + 结果字节）。</li>
   </ol>
 </aside>
@@ -230,7 +242,10 @@
   const CAR = { len: 800, width: 620 };
 
   const S = {
-    l: 600, h: 260, alpha: 20,          // 电控报来的三个量
+    l: 600, alpha: 20,                  // 电控报来的两个量（0x0006 只带这两个 + 编号）
+    h: 260,                             // 仅侧视图演示用，不进协议
+    ring_mm: 120,                       // 参考靶外圈直径，固定值
+    ring_px: 60,                        // 外圈在画面里的像素半径，视觉量出
     xt: 700, yt: 480, zt: 120,          // 视觉量出来的目标
     carX: 0, theta: 0,                  // 动画状态
     plan: null,                         // 解算结果
@@ -238,6 +253,11 @@
     elapsed: 0,                         // 当前动画时间（ms）
     revealPlan: false
   };
+
+  /** 尺度：外圈直径 ÷ 像素直径。这就是「不需要电控报相机高度」的依据。 */
+  function mmPerPx() {
+    return S.ring_mm / (2 * Math.max(1, S.ring_px));
+  }
 
   // ---------------------------------------------------------------- 几何
   let W = 880, H = 420, scale = 0.34;
@@ -274,6 +294,9 @@
   //   d = x − l·cos α      前后靠车沿自身 x 挪
   // l 是臂的水平伸出长度，比赛中固定死；相机就装在臂末端。
   // |y| > l 时 asin 的宗量超出 ±1，横向够不着，只能挪车——这时报无解，不钳位。
+  //
+  // 目标的 (x, y) 是毫米，来自「像素偏移 × 尺度」。尺度不靠电控报相机高度，
+  // 而是用参考靶外圈的固定直径反算：mm/px = 外圈直径 ÷ 像素直径。
   function solve() {
     const l = S.l;
     const r2d = 180 / Math.PI;
@@ -663,11 +686,12 @@
     line(g, 12, yy(S.h), pivotX - 4, yy(S.h));
     line(g, tX - 4, yy(S.zt), tX + 34, yy(S.zt));
     g.restore();
-    tag(g, 'h = ' + S.h.toFixed(0) + '（相机高度）', 12, yy(S.h) - 5, '#8a5a12', 10.5, 'left', w);
+    tag(g, 'h = ' + S.h.toFixed(0) + '（演示用；不进协议，尺度由靶外圈量）', 12, yy(S.h) - 5, '#8a5a12', 10.5, 'left', w);
     tag(g, 'z = ' + S.zt.toFixed(0), tX - 4, Math.max(12, yy(S.zt) - 4), '#a94b4b', 10.5, 'right', w);
 
-    // 提示：h 变了，像素→毫米的尺度也变
-    tag(g, 'h 决定像素→毫米的尺度：同一物体，相机越高，图上越小',
+    // 提示：尺度不靠 h，靠参考靶的外圈直径
+    tag(g, '尺度不靠 h：参考靶外圈直径固定，量它在画面里的像素直径即可（' +
+        mmPerPx().toFixed(3) + ' mm/px）',
         w - 14, h - 6, '#98a6b6', 10, 'right', w);
   }
 
@@ -765,7 +789,8 @@
   /** 事件表缓存：参数或场景变化时才重建。 */
   function events() {
     const sol = S.plan;
-    const key = [S.loss, S.l, S.h, S.alpha, S.xt, S.yt, S.zt,
+    const key = [S.loss, S.l, S.alpha, S.xt, S.yt, S.zt,
+                 S.ring_mm, S.ring_px,
                  sol && sol.ok ? sol.d.toFixed(3) : 'x',
                  sol && sol.ok ? sol.alphaDeg.toFixed(3) : 'x'].join('|');
     if (!S._evKey || S._evKey !== key) {
@@ -953,12 +978,13 @@
   // 单位：mm、0.1°，小端。
 
   /**
-   * 电控 → 视觉 0x0006，共 7B：
-   *   l(2) h(2) α(2) target_id(1)
+   * 电控 → 视觉 0x0006，共 5B：
+   *   l(2) α(2) target_id(1)
+   *
+   * 不带相机高度：尺度由视觉用参考靶外圈的固定直径自己量（见 mmPerPx）。
    */
   function frameArmBytes() {
     return i16(S.l)
-      .concat(i16(S.h))
       .concat(i16(S.alpha * 10))
       .concat([0]);             // target_id：0 = 不指定
   }
@@ -1009,14 +1035,17 @@
     S.plan = sol;
 
     document.getElementById('ol').textContent = S.l.toFixed(0);
-    document.getElementById('oh').textContent = S.h.toFixed(0);
     document.getElementById('oa').textContent = S.alpha.toFixed(0) + '°';
+    document.getElementById('od').textContent = S.ring_mm.toFixed(0);
+    document.getElementById('orp').textContent = S.ring_px.toFixed(0);
+    document.getElementById('oh').textContent = S.h.toFixed(0);
     document.getElementById('ox').textContent = S.xt.toFixed(0);
     document.getElementById('oy').textContent = S.yt.toFixed(0);
     document.getElementById('oz').textContent = S.zt.toFixed(0);
 
     const eqA = document.getElementById('eqA');
     const eqD = document.getElementById('eqD');
+    const eqK = document.getElementById('eqK');
 
     if (sol.ok) {
       eqA.innerHTML = 'asin(y / l) = asin(' + S.yt.toFixed(0) + ' / ' +
@@ -1027,9 +1056,11 @@
       eqA.innerHTML = '<b style="color:#c03a3a">无解（|y| &gt; l）</b>';
       eqD.innerHTML = '—';
     }
+    eqK.innerHTML = '外圈直径 ÷ 像素直径 = ' + S.ring_mm.toFixed(0) + ' ÷ ' +
+      (2 * S.ring_px).toFixed(0) + '  →  <b>' + mmPerPx().toFixed(3) + ' mm/px</b>';
 
     document.getElementById('frames').innerHTML =
-      '<em>0x0006 电控→视觉 · 7B</em>\n' + frameArmHex() + '\n\n' +
+      '<em>0x0006 电控→视觉 · 5B</em>\n' + frameArmHex() + '\n\n' +
       '<em>0x0008 视觉→电控 · 10B</em>\n' + frameCmdHex(sol);
   }
 
@@ -1057,7 +1088,7 @@
                S.alpha.toFixed(0) + '°，车还没动。', '');
       } else if (last.label.indexOf('臂状态') === 0) {
         setMsg('电控发出 0x0006 臂状态（第 ' + armCount + ' 次）：l = ' + S.l.toFixed(0) +
-               '，h = ' + S.h.toFixed(0) + '，α = ' + S.alpha.toFixed(0) + '°。' +
+               '，α = ' + S.alpha.toFixed(0) + '°（5 字节，不带相机高度）。' +
                '这一帧的应答就是视觉回的 0x0008，不另回 0x0007。', '');
       } else if (last.label.indexOf('解算') === 0) {
         if (last.lost) {
@@ -1188,13 +1219,14 @@
 
   // ---------------------------------------------------------------- 交互
   [['rl', 'l'], ['rh', 'h'], ['ra', 'alpha'], ['rx', 'xt'],
-   ['ry', 'yt'], ['rz', 'zt']].forEach(function (it) {
-    const el = document.getElementById(it[0]);
-    el.addEventListener('input', function () {
-      S[it[1]] = parseFloat(el.value);
-      reset();
+   ['ry', 'yt'], ['rz', 'zt'], ['rd', 'ring_mm'], ['rrp', 'ring_px']]
+    .forEach(function (it) {
+      const el = document.getElementById(it[0]);
+      el.addEventListener('input', function () {
+        S[it[1]] = parseFloat(el.value);
+        reset();
+      });
     });
-  });
 
   document.getElementById('run').addEventListener('click', run);
   document.getElementById('reset').addEventListener('click', reset);

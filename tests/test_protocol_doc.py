@@ -47,7 +47,7 @@ EXPECTED_CMD_TABLE = {
     CMD_POSE: 9,
     CMD_TURNTABLE: 16,
     CMD_REGION: 1,
-    CMD_ARM_STATE: 7,
+    CMD_ARM_STATE: 5,
     CMD_ACK: 2,
     CMD_ARM_SOLUTION: 10,
 }
@@ -72,8 +72,8 @@ POSE_DATA = i16(1200) + i16(600) + i16(23) + bytes((4, 0xE3, 1))
 TURNTABLE_DATA = (i16(250) + i16(-60) + u16(150) + i16(600) + i16(600)
                   + bytes((3, 0x8F)) + bytes((4, 5, 2)) + bytes((0,)))
 
-# 臂状态: l=600mm, h=300mm, yaw=15.0deg, 目标编号 1
-ARM_STATE_DATA = u16(600) + u16(300) + i16(150) + bytes((1,))
+# 臂状态: l=600mm, yaw=15.0deg, 目标编号 1（相机高度不再上报，共 5 字节）
+ARM_STATE_DATA = u16(600) + i16(150) + bytes((1,))
 
 # 应答: 确认 seq=11，结果 0(成功)
 ACK_DATA = bytes((11, 0))
@@ -335,6 +335,26 @@ def test_only_two_frames_require_ack(doc_text):
 def test_business_frame_as_ack_is_documented(doc_text):
     """0x0006 的应答是 0x0008，不另回 0x0007——这条不写清会做出两种等法。"""
     assert "业务帧即应答" in doc_text
+
+
+def test_arm_state_has_no_camera_height(doc_text):
+    """0x0006 只带 l、α 与目标编号。
+
+    相机高度原本用来定尺度，但参考靶外圈直径固定、尺度可以由视觉自己量出来，
+    所以这一项去掉了。这条必须与代码一致：多留一个字段会让两边字节对不齐，
+    而字节错位不会报错，只会解出莫名其妙的角度。
+    """
+    assert "cam_height" not in doc_text
+    assert "相机离地高度" not in doc_text
+    assert "尺度则由视觉自己从画面里量出来" in doc_text
+    assert P.DATA_LEN[CMD_ARM_STATE] == 5
+
+
+def test_scale_from_ring_diameter_is_implemented():
+    """文档说「量外圈像素直径反算尺度」，代码里就必须真有这一步。"""
+    from src.algorithms.arm import mm_per_px_from_ring
+
+    assert mm_per_px_from_ring(60.0, 120.0) == pytest.approx(1.0)
 
 
 def test_resend_keeps_seq_is_documented(doc_text):

@@ -97,7 +97,7 @@ def test_command_ids_match_doc_table():
         P.CMD_POSE: 9,
         P.CMD_TURNTABLE: 16,
         P.CMD_REGION: 1,
-        P.CMD_ARM_STATE: 7,
+        P.CMD_ARM_STATE: 5,
         P.CMD_ACK: 2,
         P.CMD_ARM_SOLUTION: 10,
     }

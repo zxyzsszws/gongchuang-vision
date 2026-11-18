@@ -30,7 +30,14 @@ d = x − l·cos α          前后位置靠车沿自身 x 挪
 ## d 是相对当前位置的增量
 
 正的 d 表示沿车头方向前进，负的表示后退。视觉每次都从零算，不做跨帧累积；
-电控执行完一次动作后，下一轮重新给 l、h、α 即可。
+电控执行完一次动作后，下一轮重新给 l 与 α 即可。
+
+## 尺度从哪来（不需要电控上报相机高度）
+
+`l` 与 `α` 只能定出相机相对转轴在哪、朝哪，还差一项像素到毫米的换算比例。
+这一项视觉自己量：参考靶的外圈直径是固定值，量出它在画面里的像素直径，
+`mm/px = 外圈直径 ÷ 像素直径`（``mm_per_px_from_ring``）。台面上没有靶时
+（例如对着转盘取料）沿用标定时的固定 ``scale_mm_per_px``。
 """
 import math
 from dataclasses import dataclass
@@ -51,15 +58,14 @@ GRADE_BAD, GRADE_MID, GRADE_GOOD, GRADE_BEST = 0, 1, 2, 3
 
 @dataclass(frozen=True)
 class ArmState:
-    """电控发来的臂状态（协议 0x0006），也是相机的安装状态。
+    """电控发来的臂状态（协议 0x0006）。
 
-    ``l`` 是臂的水平伸出长度、``h`` 是相机离地高度、``alpha_deg`` 是臂当前 yaw。
-    相机装在臂末端且正对地面，所以这三项决定了「像素里的点对应电机坐标系哪里」：
-    l 与 α 给出转轴到相机的平移与旋转，h 给出尺度。
+    ``l`` 是臂的水平伸出长度、``alpha_deg`` 是臂当前 yaw。相机装在臂末端且正对
+    地面，这两项给出转轴到相机的平移与旋转；像素到毫米的尺度由视觉用参考靶的外圈
+    直径自行量出（见 ``mm_per_px_from_ring``），不需要电控上报相机高度。
     """
 
     l_mm: float
-    h_mm: float
     alpha_deg: float
     seq: int = 0
 
@@ -121,3 +127,38 @@ def no_target_solution(echo_seq=0):
     """没测到目标时的解算结果：明确报「没测到」，不要发一个假的坐标。"""
     return ArmSolution(0.0, 0.0, encode_status(OUTCOME_NO_TARGET, GRADE_BAD),
                        (0.0, 0.0), echo_seq)
+
+
+def mm_per_px_from_ring(ring_radius_px, ring_outer_mm):
+    """由参考靶外圈的像素半径反算尺度 mm/px。
+
+    参考靶的外圈直径是固定值（赛前量一次写进配置），所以「它在画面里有多大」
+    就直接给出像素到毫米的换算比例：``mm/px = 外圈直径 ÷ 像素直径``。
+
+    比让电控上报相机高度可靠：高度算尺度的前提是光轴严格垂直地面、镜头无畸变、
+    高度值准确，三项任一不成立都会系统性偏；而用靶自己量，尺度与被测物在同一张
+    画面里，倾斜与畸变的影响大部分相消。
+
+    ``ring_radius_px`` 是检出到的**最外圈**半径（像素）。半径太小（远小于几像素）
+    时相对误差会被放大，这种情况抛 ValueError 而不是返回一个虚高的精度。
+    """
+    r_px = float(ring_radius_px)
+    if r_px < 2.0:
+        raise ValueError(f"外圈像素半径 {r_px} 太小，尺度不可信")
+    outer_mm = float(ring_outer_mm)
+    if outer_mm <= 0.0:
+        raise ValueError(f"外圈实际直径必须为正，收到 {outer_mm}")
+    return outer_mm / (2.0 * r_px)
+
+
+def scale_target(target_px, center_px, mm_per_px):
+    """把像素域的目标点绕画面中心缩放到毫米域，得到电机坐标系下的 (x, y)。
+
+    ``target_px`` / ``center_px`` 都是 ``(x, y)`` 像素坐标；后者是**转轴在画面里的
+    位置**（即相机光轴落点，由标定给出）。结果仍以画面坐标系为准，调用方再按安装
+    角旋转到电机坐标系——这一层只负责长度换算，不猜朝向。
+    """
+    k = float(mm_per_px)
+    tx, ty = float(target_px[0]), float(target_px[1])
+    cx, cy = float(center_px[0]), float(center_px[1])
+    return ((tx - cx) * k, (ty - cy) * k)

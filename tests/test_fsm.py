@@ -296,9 +296,9 @@ def test_retired_commands_are_silently_ignored():
 
 # ---------- 臂解算往返 ----------
 
-def _arm_frame(seq=1, l_mm=600, h_mm=300, alpha01=0, target_id=0):
+def _arm_frame(seq=1, l_mm=600, alpha01=0, target_id=0):
     return Frame(seq=seq, cmd_id=CMD_ARM_STATE,
-                 data=struct.pack("<HHHb", l_mm, h_mm, alpha01, target_id))
+                 data=struct.pack("<HHb", l_mm, alpha01, target_id))
 
 
 def _arm_ready(**scene_kw):
