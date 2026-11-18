@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通信全过程演示 · 电控 ⇄ 视觉（协议 V2.2.0）</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{height:100vh;overflow:hidden;background:#eef1f5;color:#1b2430;
+       font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .app{display:flex;height:100vh}
+
+  /* ---------------- 左侧：时序图 ---------------- */
+  main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;background:#fbfcfe}
+  .bar{flex:0 0 auto;display:flex;align-items:center;gap:14px;
+       padding:11px 18px;border-bottom:1px solid #e2e8ef;background:#fff}
+  .bar h1{font-size:14px;margin:0;font-weight:600;white-space:nowrap}
+  .bar .ver{font-size:10.5px;color:#fff;background:#2f6fb5;border-radius:4px;
+            padding:2px 6px;letter-spacing:.4px;font-weight:600}
+  .bar .sp{flex:1 1 auto}
+  .bar .stat{font-size:11.5px;color:#6b7a8c;font-family:ui-monospace,Consolas,monospace;
+             white-space:nowrap}
+  .bar .stat b{color:#1b2430}
+  .bar button{padding:6px 13px;border-radius:6px;border:1px solid #cfd9e5;background:#fff;
+              color:#33414f;font-size:12px;font-family:inherit;cursor:pointer}
+  .bar button:hover{background:#f4f7fa}
+  .bar button.primary{background:#2f6fb5;border-color:#2f6fb5;color:#fff;font-weight:600}
+  .bar button.primary:hover{background:#2a639f}
+  .bar select{padding:5px 7px;border-radius:6px;border:1px solid #cfd9e5;background:#fff;
+              color:#33414f;font-size:11.5px;font-family:inherit;cursor:pointer}
+
+  .diagram{flex:1 1 auto;position:relative;overflow-y:auto;overflow-x:hidden}
+  .heads{position:sticky;top:0;z-index:3;height:52px;background:rgba(251,252,254,.96);
+         backdrop-filter:blur(4px);border-bottom:1px solid #e8edf3}
+  .heads span{position:absolute;top:9px;transform:translateX(-50%);
+              font-size:11.5px;font-weight:600;color:#4a5768;white-space:nowrap;
+              line-height:1.45;text-align:center}
+  .heads span.ecu{left:26%}
+  .heads span.vis{left:74%}
+  .heads em{display:block;font-style:normal;font-weight:400;font-size:10.5px;
+            color:#9aa8b8;margin-top:1px}
+
+  #rows{position:relative;padding:6px 0 30px}
+  .lane{position:absolute;top:0;bottom:0;width:1px;background:#dbe3ec}
+  .lane.a{left:26%}
+  .lane.b{left:74%}
+
+  .row{position:relative;opacity:0;transform:translateY(6px);
+       transition:opacity .28s ease,transform .28s ease}
+  .row.in{opacity:1;transform:none}
+
+  /* 说明行 */
+  .row.note{padding:9px 18px}
+  .row.note .txt{max-width:640px;margin:0 auto;font-size:11.8px;line-height:1.72;
+                 color:#4a5768;background:#f5f8fb;border-left:3px solid #cfd9e5;
+                 padding:8px 11px;border-radius:0 5px 5px 0}
+  .row.note .txt b{color:#1b2430}
+  .row.note .txt code{font-family:ui-monospace,Consolas,monospace;font-size:10.8px;
+                      background:#eaeff5;padding:1px 4px;border-radius:3px}
+  .row.note.hi .txt{background:#fff6e8;border-left-color:#e8912b;color:#8a5a12}
+  .row.note.ok .txt{background:#f1f8f2;border-left-color:#3f9a55;color:#2b6b3b}
+
+  /* 等待行 */
+  .row.wait{padding:10px 18px}
+  .row.wait .pill{max-width:460px;margin:0 auto;display:flex;align-items:center;
+                  justify-content:center;gap:8px;font-size:11.5px;color:#78879a;
+                  border:1px dashed #cfd9e5;border-radius:20px;padding:6px 14px;
+                  background:#fafcfe}
+  .dots{display:inline-flex;gap:3px}
+  .dots i{width:4px;height:4px;border-radius:50%;background:#a8b6c6;
+          animation:blink 1.1s infinite}
+  .dots i:nth-child(2){animation-delay:.18s}
+  .dots i:nth-child(3){animation-delay:.36s}
+  @keyframes blink{0%,100%{opacity:.25}50%{opacity:1}}
+
+  /* 帧行 */
+  .row.frame{height:66px}
+  .arrow{position:absolute;left:26%;right:26%;top:50%;cursor:pointer}
+  .arrow .cap{position:absolute;bottom:9px;left:-24px;right:-24px;text-align:center;
+              font-size:11px;color:#4a5768;line-height:1.5;white-space:nowrap;
+              overflow:hidden;text-overflow:ellipsis}
+  .arrow .cap b{color:#1b2430;font-weight:600}
+  .arrow .cap .len{color:#9aa8b8;font-family:ui-monospace,Consolas,monospace;font-size:10.5px}
+  .arrow .ln{position:absolute;left:0;right:0;height:0;border-top:2px solid #2f6fb5}
+  .arrow.down .ln::after{content:'';position:absolute;right:-1px;top:-5.5px;
+    border-left:9px solid #2f6fb5;border-top:5.5px solid transparent;
+    border-bottom:5.5px solid transparent}
+  .arrow.up .ln::after{content:'';position:absolute;left:-1px;top:-5.5px;
+    border-right:9px solid #2f6fb5;border-top:5.5px solid transparent;
+    border-bottom:5.5px solid transparent}
+  .arrow.up .ln{border-top-style:solid;border-top-color:#3f9a55}
+  .arrow.up .ln::after{border-right-color:#3f9a55}
+  .arrow:hover .ln{border-top-width:3px}
+  .arrow.sel .ln{border-top-width:3px;box-shadow:0 0 0 1px rgba(47,111,181,.18)}
+  .arrow.sel.down .ln{border-top-color:#1f4e86}
+  .arrow.sel.up .ln{border-top-color:#2b6b3b}
+
+  .arrow .tag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:3px;
+              font-size:10px;font-weight:600;vertical-align:1px}
+  .tag.re{background:#fff1e0;color:#a5641a}
+  .tag.lost{background:#fdecec;color:#a02b2b}
+  .tag.bad{background:#fdecec;color:#a02b2b}
+  .tag.fail{background:#fff1e0;color:#a5641a}
+
+  .arrow.lost .ln{border-top:2px dashed #d94a4a}
+  .arrow.lost .ln::after{border-left-color:#d94a4a;border-right-color:#d94a4a}
+  .arrow.lost .cap{color:#a02b2b}
+  .arrow .x{position:absolute;left:50%;top:-9px;transform:translateX(-50%);
+            font-size:13px;color:#d94a4a;font-weight:700}
+
+  /* 时间轴提示：放在头部条右侧，避免压住第一段说明 */
+  .tlab{position:absolute;right:14px;top:19px;font-size:10px;color:#b3c0cd;
+        letter-spacing:1.5px;pointer-events:none}
+
+  /* ---------------- 右侧面板 ---------------- */
+  aside{flex:0 0 424px;background:#fff;border-left:1px solid #dfe5ec;
+        padding:14px 18px 44px;overflow-y:auto}
+  h2{font-size:11px;margin:18px 0 8px;color:#8a97a6;font-weight:600;
+     letter-spacing:.8px;text-transform:uppercase}
+  h2:first-child{margin-top:0}
+  .sub{font-size:11.4px;line-height:1.7;color:#78879a;margin:0 0 10px}
+  .sub a{color:#2f6fb5;text-decoration:none}
+  .sub a:hover{text-decoration:underline}
+
+  .scenes{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .scenes button{padding:7px 6px;border-radius:6px;border:1px solid #dfe5ec;background:#fff;
+                 color:#4a5768;font-size:11.5px;font-family:inherit;cursor:pointer;
+                 text-align:center;line-height:1.35}
+  .scenes button:hover{background:#f4f7fa;border-color:#cfd9e5}
+  .scenes button.on{background:#eef4fc;border-color:#9db9d8;color:#1f4e86;font-weight:600}
+
+  .scene-desc{font-size:11.4px;line-height:1.7;color:#4a5768;background:#f5f8fb;
+              border-left:3px solid #cfd9e5;padding:7px 10px;border-radius:0 5px 5px 0;
+              margin:8px 0 0}
+
+  /* 字节检查器 */
+  .hex{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;font-size:11.5px;
+       line-height:2.05;background:#f7f9fc;border:1px solid #e6ebf1;border-radius:6px;
+       padding:9px 10px;word-break:break-all}
+  .hex span{display:inline-block;padding:0 3px;border-radius:3px;margin:0 1px}
+  .hex .gap{width:7px;background:none;padding:0;margin:0}
+  .g-sof{background:#e6ebf1;color:#5b6b7c}
+  .g-len{background:#e6ebf1;color:#5b6b7c}
+  .g-seq{background:#e3eefb;color:#1f4e86}
+  .g-crc8{background:#eef2f6;color:#8a97a6}
+  .g-cmd{background:#dde8f6;color:#1b3f6b;font-weight:600}
+  .g-task{background:#efe9f8;color:#5b3a8c;font-weight:600}
+  .g-body{background:#e4f2e7;color:#2b6b3b;font-weight:600}
+  .g-crc16{background:#fbe9e9;color:#a02b2b}
+
+  table.fld{width:100%;border-collapse:collapse;margin-top:9px;font-size:11px}
+  table.fld th{text-align:left;font-weight:600;color:#8a97a6;font-size:10.5px;
+               padding:0 0 5px;border-bottom:1px solid #eef2f6}
+  table.fld td{padding:5px 0;border-bottom:1px dashed #eef2f6;vertical-align:top;
+               color:#4a5768;line-height:1.55}
+  table.fld tr:last-child td{border-bottom:0}
+  table.fld td.k{white-space:nowrap;padding-right:8px}
+  table.fld td.k i{display:inline-block;width:8px;height:8px;border-radius:2px;
+                   margin-right:6px;vertical-align:0;font-style:normal}
+  table.fld td.v{font-family:ui-monospace,Consolas,monospace;font-size:10.8px;color:#1b2430}
+
+  table.lens{width:100%;border-collapse:collapse;font-size:11px}
+  table.lens th{text-align:left;font-weight:600;color:#8a97a6;font-size:10.5px;
+                padding:0 0 5px;border-bottom:1px solid #eef2f6}
+  table.lens td{padding:5px 0;border-bottom:1px dashed #eef2f6;color:#4a5768}
+  table.lens td.n{font-family:ui-monospace,Consolas,monospace;text-align:right;
+                  padding-right:10px;color:#1b2430}
+  table.lens tr:last-child td{border-bottom:0}
+
+  ol.rules{margin:0;padding:0;list-style:none;font-size:11.4px;line-height:1.72;
+           color:#4a5768}
+  ol.rules li{padding:7px 0;border-bottom:1px dashed #eef2f6}
+  ol.rules li:last-child{border-bottom:0}
+  ol.rules b{color:#1b2430;font-weight:600}
+  ol.rules code{font-family:ui-monospace,Consolas,monospace;font-size:10.6px;
+                background:#f3f6fa;padding:1px 3px;border-radius:3px}
+
+  .empty{font-size:11.4px;color:#9aa8b8;text-align:center;padding:22px 0;
+         border:1px dashed #e2e8ef;border-radius:6px}
+
+  @media (max-width:1040px){
+    .app{flex-direction:column}
+    aside{flex:0 0 auto;max-height:50vh;border-left:0;border-top:1px solid #dfe5ec}
+    main{flex:0 0 50vh}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <main>
+    <div class="bar">
+      <span class="ver">V2.2.0</span>
+      <h1>通信全过程</h1>
+      <span class="sp"></span>
+      <span class="stat" id="stat">—</span>
+      <select id="speed">
+        <option value="1">1×</option>
+        <option value="0.55">0.5×</option>
+        <option value="2">2×</option>
+      </select>
+      <button id="play" class="primary">播放</button>
+      <button id="reset">重置</button>
+    </div>
+    <div class="diagram" id="diagram">
+      <div class="heads">
+        <span class="ecu">电控（机器人主控）<em>发请求</em></span>
+        <span class="vis">视觉（Jetson）<em>作答</em></span>
+        <span class="tlab">时间 ↓</span>
+      </div>
+      <div id="rows">
+        <div class="lane a"></div>
+        <div class="lane b"></div>
+      </div>
+    </div>
+  </main>
+
+  <aside>
+    <h2>场景</h2>
+    <div class="scenes" id="scenes"></div>
+    <p class="scene-desc" id="desc"></p>
+
+    <h2>帧字节（自动跟随，可点箭头）</h2>
+    <div id="insp"></div>
+
+    <h2>帧长一览</h2>
+    <table class="lens">
+      <thead><tr><th>方向</th><th>任务码</th><th class="n">data</th><th class="n">帧长</th></tr></thead>
+      <tbody>
+        <tr><td>请求</td><td>1 扫码</td><td class="n">1</td><td class="n">10</td></tr>
+        <tr><td>结果</td><td>1 扫码</td><td class="n">19</td><td class="n">28</td></tr>
+        <tr><td>请求</td><td>2 转盘</td><td class="n">1</td><td class="n">10</td></tr>
+        <tr><td>结果</td><td>2 转盘</td><td class="n">4</td><td class="n">13</td></tr>
+        <tr><td>请求</td><td>3 对准</td><td class="n">5</td><td class="n">14</td></tr>
+        <tr><td>结果</td><td>3 对准</td><td class="n">7</td><td class="n">16</td></tr>
+      </tbody>
+    </table>
+    <p class="sub" style="margin-top:8px">
+      帧长 = 9 字节固定开销 + data 长度（帧头 5 + 命令码 2 + CRC16 2）。
+    </p>
+
+    <h2>七条硬规则</h2>
+    <ol class="rules">
+      <li><b>一条往返说清一件事。</b>请求用任务码说明要什么；<code>0x0011</code> 结果帧本身就是应答，没有单独的 ack，也没有 done。</li>
+      <li><b>视觉平时完全沉默。</b>没有心跳、没有周期上报。整局只在你问的时候说话，静默是正常状态。</li>
+      <li><b>重发只由电控做。</b><code>seq</code> 与内容都不变；视觉把上次结果原样再发一遍，从不主动重发。</li>
+      <li><b>视觉在处理同一个请求时不重置计时</b>，只记一条 <code>DUPLICATE_WHILE_BUSY</code>。</li>
+      <li><b>电控必须按 <code>echo_seq</code> 去重。</b>同一个 <code>echo_seq</code> 只执行一次，否则车会沿同一个 d 走两遍。</li>
+      <li><b>结果长度按任务码固定。</b>失败时正文补 0，电控一次读满 N 字节，不必处理「短了」的分支。</li>
+      <li><b>连续 5 个不合法请求进入 SAFESTOP。</b>中间成功一次即重新计数。</li>
+    </ol>
+
+    <p class="sub" style="margin-top:14px">
+      完整契约见 <a href="protocol-v2.2.0.md">protocol-v2.2.0.md</a>。
+      本页的帧字节由与 <code>src/core/protocol.py</code> 相同的算法现算，不是手抄的示例。
+    </p>
+  </aside>
+</div>
+
+<script>
+// ============================================================ 协议常量
+const SOF = 0xA5;
+const CMD_REQUEST = 0x0010;
+const CMD_RESULT  = 0x0011;
+const TASK_SCAN = 1, TASK_TURNTABLE = 2, TASK_ALIGN = 3;
+const TASK_NAME = {1:'扫码', 2:'转盘取料点颜色', 3:'对准主圆'};
+const ST_NAME = {0:'ST_OK', 1:'ST_NOT_READY', 2:'ST_UNSOLVABLE', 3:'ST_BAD_REQUEST'};
+
+// ============================================================ CRC（与 src/core/crc.py 逐位一致）
+const CRC8_TAB = (() => {
+  const t = [];
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? ((c >> 1) ^ 0x8C) : (c >> 1);
+    t.push(c & 0xFF);
+  }
+  return t;
+})();
+const CRC16_TAB = (() => {
+  const t = [];
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? ((c >> 1) ^ 0x8408) : (c >> 1);
+    t.push(c & 0xFFFF);
+  }
+  return t;
+})();
+function crc8(bytes) {
+  let c = 0xFF;
+  for (const b of bytes) c = CRC8_TAB[(c ^ b) & 0xFF];
+  return c;
+}
+function crc16(bytes) {
+  let c = 0xFFFF;
+  for (const b of bytes) c = (c >> 8) ^ CRC16_TAB[(c ^ b) & 0xFF];
+  return c;
+}
+
+/** 编码一帧，返回逐字节数组 + 分组信息。 */
+function encode(seq, cmd, data) {
+  const dl = 2 + data.length;
+  const head = [SOF, dl & 0xFF, (dl >> 8) & 0xFF, seq & 0xFF];
+  const c8 = crc8(head);
+  const body = head.concat([c8, cmd & 0xFF, (cmd >> 8) & 0xFF], data);
+  const c16 = crc16(body);
+  return {
+    bytes: body.concat([c16 & 0xFF, (c16 >> 8) & 0xFF]),
+    c8: c8, c16: c16, dl: dl
+  };
+}
+
+// ============================================================ 帧构造
+const PLAN = [4, 5, 2, 3, 2, 1, 2, 5, 4, 3, 1, 2, 1, 2, 3, 0x8D];
+
+const reqScan      = (seq) => ({seq, cmd: CMD_REQUEST,  data: [TASK_SCAN]});
+const resScan      = (seq, echo, plan, st) => ({seq, cmd: CMD_RESULT,
+                       data: [echo, TASK_SCAN, st || 0].concat(st ? new Array(16).fill(0) : plan)});
+const reqTurntable = (seq) => ({seq, cmd: CMD_REQUEST,  data: [TASK_TURNTABLE]});
+const resTurntable = (seq, echo, st, color) => ({seq, cmd: CMD_RESULT,
+                       data: [echo, TASK_TURNTABLE, st, st === 0 ? color : 0]});
+const reqAlign     = (seq, l, a01) => ({seq, cmd: CMD_REQUEST,
+                       data: [TASK_ALIGN, l & 0xFF, (l >> 8) & 0xFF, a01 & 0xFF, (a01 >> 8) & 0xFF]});
+const resAlign     = (seq, echo, d, a01) => ({seq, cmd: CMD_RESULT,
+                       data: [echo, TASK_ALIGN, 0, d & 0xFF, (d >> 8) & 0xFF,
+                              a01 & 0xFF, (a01 >> 8) & 0xFF]});
+
+// ============================================================ 场景
+const L = 600;          // 臂水平伸出长度 mm
+const A_CUR = 0;        // 电控报来的臂 yaw（0.1° 单位），0 = 正对车头
+const D_OUT = 125;      // 解出的车位移 mm
+const A_OUT = 70;       // 解出的目标 yaw（0.1° 单位），70 = 7.0°
+
+const S = (t, o) => Object.assign({t}, o);
+
+const SCENES = {
+  full: {
+    name: '全场流程',
+    desc: '一局里视觉只被问三次：扫码、转盘取料点颜色、对准主圆。中间那几段视觉一句话都不说。',
+    steps: [
+      S('note', {text: '开局。<b>视觉上电即待命（SERVICE）</b>，但它不会先发任何帧——没有握手上报，也没有心跳。想知道它在不在，就只能发一条请求看它答不答。'}),
+      S('note', {text: '电控把扫码相机对准二维码，发<b>请求</b>：任务码 1，载荷只有这 1 个字节。'}),
+      S('frame', {dir: 'down', f: reqScan(7), what: '请求 · 任务码 1'}),
+      S('wait',  {text: '视觉取帧、解二维码、把四组数字解析成任务计划并自检'}),
+      S('note',  {text: '二维码内容是 <code>452+321+254+312</code>。视觉按「第一批颜色 / 第一批靶号 / 第二批颜色 / 第二批靶号」拆开，再按颜色把第二批配到暂存区靶号上；任何一项对不上就回 <code>ST_NOT_READY</code> 而不是发一份错的计划。'}),
+      S('frame', {dir: 'up', f: resScan(8, 7, PLAN), what: '结果 · 任务码 1 · ST_OK', ok: true}),
+      S('note',  {text: '电控拿到 16 字节任务计划，开始规划摆料顺序。<b>此后视觉沉默</b>——这段时间里串口上一个字节都没有，这是设计如此。'}),
+      S('note',  {text: '电控到原料区，把臂<b>悬停</b>在取料点上方，发请求：任务码 2。此时转盘可能还在转，电控不需要（也不应该）告诉视觉「现在已经停了」。'}),
+      S('frame', {dir: 'down', f: reqTurntable(9), what: '请求 · 任务码 2'}),
+      S('wait',  {text: '视觉连续取帧，自己判定转盘是否停稳（这一条最耗时）'}),
+      S('note',  {text: '转盘停住，0 号工位正对取料点，颜色编号 4。判据是<b>相对计时起点的累计位移</b>持续小于门限——不能看相邻两帧的位移，转盘转着时 20ms 也只走 3mm，那样会被判成停稳。'}),
+      S('frame', {dir: 'up', f: resTurntable(10, 9, 0, 4), what: '结果 · 任务码 2 · ST_OK · 颜色 4', ok: true}),
+      S('note',  {text: '电控到放置点，把臂伸到主圆附近，发请求：任务码 3，载荷里带<b>臂的水平伸出长度 l 与当前 yaw α</b>。'}),
+      S('frame', {dir: 'down', f: reqAlign(11, L, A_CUR), what: '请求 · 任务码 3 · l=600mm · α=0.0°'}),
+      S('note',  {text: '视觉量画面里的主圆，把像素偏移换成毫米，再<b>补上相机自身在电机坐标系里的位置</b>，解出「车该挪多少、臂该转多少」。'}),
+      S('frame', {dir: 'up', f: resAlign(12, 11, D_OUT, A_OUT), what: '结果 · 任务码 3 · ST_OK · d=125mm · α=7.0°', ok: true}),
+      S('note',  {text: '电控按 <code>echo_seq</code> 去重后执行：<b>先挪车 d，再转臂到 α</b>。一次往返结束，视觉继续待命，不需要任何 done。'})
+    ]
+  },
+
+  scan: {
+    name: '任务 1 扫码',
+    desc: '载荷 1 字节，结果 19 字节：16 字节任务计划直接被放进结果正文里，不再另开一条命令。',
+    steps: [
+      S('note',  {text: '电控发请求：<code>data = [01]</code>，整帧 10 字节。'}),
+      S('frame', {dir: 'down', f: reqScan(7), what: '请求 · 任务码 1'}),
+      S('wait',  {text: '取帧 → 解二维码 → 解析四组数字 → 自检'}),
+      S('frame', {dir: 'up', f: resScan(8, 7, PLAN), what: '结果 · 任务码 1 · ST_OK', ok: true}),
+      S('note',  {text: '结果正文前 3 字节固定是 <code>echo_seq + 任务码 + status</code>，之后 16 字节就是任务计划。电控按任务码 1 一次读满 19 字节即可。'}),
+      S('note',  {text: '读不到码、或者读到了但内容不自洽，都回 <code>ST_NOT_READY</code>，正文 16 字节补 0。<b>绝不发一份错的计划</b>——错的计划不会报错，只会让车去错的地方。'}),
+      S('frame', {dir: 'up', f: resScan(14, 13, null, 1), what: '结果 · 任务码 1 · ST_NOT_READY', tag: 'fail', tagText: '没读到码'}),
+      S('note',  {text: '注意长度没变：还是 28 字节，只是 16 字节正文全是 0。状态码说明为什么失败，正文不得使用。'})
+    ]
+  },
+
+  turntable: {
+    name: '任务 2 转盘',
+    desc: '等待型任务：电控悬停后发一次请求，视觉自己等转盘停稳再答。',
+    steps: [
+      S('note',  {text: '电控把臂悬停在取料点上方，发请求：<code>data = [02]</code>。'}),
+      S('frame', {dir: 'down', f: reqTurntable(9), what: '请求 · 任务码 2'}),
+      S('wait',  {text: '转盘还在转，视觉每 20ms 取一帧，累计位移还很大'}),
+      S('note',  {text: '判定策略由视觉侧配置 <code>turntable.stop_strategy</code> 选择，<b>协议层面完全一致</b>：<code>motion</code> 看累计位移，<code>containment</code> 看物料是否完全落进边界圆。电控不需要知道用的是哪一种。'}),
+      S('wait',  {text: '转盘停住，位移持续小于门限，保持够久之后判定通过'}),
+      S('note',  {text: '选颜色：取离取料点<b>最近</b>的那块物料，读它的颜色编号。'}),
+      S('frame', {dir: 'up', f: resTurntable(10, 9, 0, 4), what: '结果 · 任务码 2 · ST_OK · 颜色 4', ok: true}),
+      S('note',  {text: '电控只看到 4 字节：<code>echo_seq + 任务码 + status + 颜色</code>。颜色 1~6 与任务计划里的编号一致。'})
+    ]
+  },
+
+  align: {
+    name: '任务 3 对准',
+    desc: '载荷 5 字节（任务码 + l + α），结果 7 字节（3 + d + α）。没有 done，电控执行完不用回任何东西。',
+    steps: [
+      S('note',  {text: '电控把臂伸到主圆附近，发请求：任务码 3、l = 600mm、α<sub>当前</sub> = 0.0°。'}),
+      S('frame', {dir: 'down', f: reqAlign(11, L, A_CUR), what: '请求 · 任务码 3 · l=600mm · α=0.0°'}),
+      S('wait',  {text: '取一帧，检出主圆，量外圈像素直径'}),
+      S('note',  {text: '尺度不用电控上报：<code>mm/px = 外圈直径 ÷ 像素直径</code>。这里外圈直径 120mm、像素直径 120px，所以 1.0mm/px。量不到外圈时退回相机外参的标定值。'}),
+      S('note',  {text: '解算（<b>必须补上相机位置</b>）：<br><code>相机位置 = (l·cos α, l·sin α) = (600, 0)</code><br><code>主圆位置 = 相机位置 + R(α)·(像素偏移换毫米) = (720.5, 73.1)</code><br><code>α = asin(73.1 / 600) = 7.0°</code>　<code>d = 720.5 − 600·cos 7° = 125.0mm</code>'}),
+      S('frame', {dir: 'up', f: resAlign(12, 11, D_OUT, A_OUT), what: '结果 · 任务码 3 · ST_OK · d=125mm · α=7.0°', ok: true}),
+      S('note',  {text: '漏掉相机位置那一项是这一层最容易犯的错：结果会稳定地少一整条臂长，看起来「有输出」，实际永远差那么远。'}),
+      S('note',  {text: '横向 <code>|y| &gt; l</code> 时回 <code>ST_UNSOLVABLE</code>，d 与 α 填 0，<b>不钳位</b>。钳位会给出一个「看起来能到、实际差一截」的答案，电控抓空却不报错。'}),
+      S('frame', {dir: 'up', f: {seq: 15, cmd: CMD_RESULT, data: [13, TASK_ALIGN, 2, 0, 0, 0, 0]}, what: '结果 · 任务码 3 · ST_UNSOLVABLE · 够不着', tag: 'fail', tagText: '够不着'}),
+      S('note',  {text: '电控据此决定：挪车、换姿态，或者放弃这个点。视觉不替它猜。'})
+    ]
+  },
+
+  retry: {
+    name: '丢包与重发',
+    desc: '整条链路只有一个重试者。结果帧丢了，电控重发原请求，视觉原样再发一遍。',
+    steps: [
+      S('note',  {text: '电控发请求（任务码 3）。'}),
+      S('frame', {dir: 'down', f: reqAlign(11, L, A_CUR), what: '请求 · 任务码 3 · l=600mm · α=0.0°'}),
+      S('note',  {text: '视觉解算完成，发出结果帧……'}),
+      S('frame', {dir: 'up', f: resAlign(12, 11, D_OUT, A_OUT), what: '结果 · 任务码 3 · ST_OK', lost: true, tag: 'lost', tagText: '丢了'}),
+      S('note',  {text: '这一帧在半路丢了（或者 CRC16 没过被电控丢掉）。电控等不到结果，<b>不知道</b>是丢了还是视觉没收到——所以它只能重发。'}),
+      S('note',  {text: '电控重发<b>原请求</b>：<code>seq</code> 与内容逐字节不变。<b>视觉不参与重试</b>，它只是应答方，发完就没事了。'}),
+      S('frame', {dir: 'down', f: reqAlign(11, L, A_CUR), what: '请求 · 任务码 3（重发）', tag: 're', tagText: 'seq 不变'}),
+      S('note',  {text: '视觉认出这是同一个请求（<code>seq</code>、任务码、载荷全同），把上次的答案<b>原样再发一遍</b>——不重新测量，也不重新解算。'}),
+      S('frame', {dir: 'up', f: resAlign(13, 11, D_OUT, A_OUT), what: '结果 · 任务码 3 · data 逐字节相同', tag: 're', tagText: '帧 seq 换新', ok: true}),
+      S('note',  {text: '注意两个 seq 是不同的东西：<b>帧自己的 seq</b> 每次都换新的（视觉自己递增），<b>echo_seq</b> 原样带回请求的那个。电控按 <code>echo_seq</code> 去重。'}),
+      S('note',  {text: '这一条是硬性的：视觉原样重发时 <code>echo_seq</code> 不变，电控若不去重，车会沿同一个 d 走两遍——这类错误不报任何错，只表现为位置错。'})
+    ]
+  },
+
+  timeout: {
+    name: '超时没测到',
+    desc: '等到上限也没测到，也要回一帧。不能无限无响应。',
+    steps: [
+      S('note',  {text: '电控发请求（任务码 2）。'}),
+      S('frame', {dir: 'down', f: reqTurntable(9), what: '请求 · 任务码 2'}),
+      S('wait',  {text: '转盘一直在转，视觉每 20ms 取一帧，判断始终不通过'}),
+      S('note',  {text: '等到 <code>turntable_timeout_s</code> = 3 秒上限。这段时间里电控可能在重发同一个请求，视觉<b>不会因此重置计时</b>——否则永远等不到超时，表现为「视觉永远不回」。'}),
+      S('frame', {dir: 'up', f: resTurntable(10, 9, 1, 0), what: '结果 · 任务码 2 · ST_NOT_READY', tag: 'fail', tagText: '没测到'}),
+      S('note',  {text: '长度仍是 4 字节，颜色填 0。<b>填 0 只是占位，不是「空位」这个结论</b>：电控只看状态码，<code>ST_OK</code> 之外的颜色字段一律不得使用。'}),
+      S('note',  {text: '<code>ST_NOT_READY</code> 的意思是「这次没看到，可能下次就看到了」，值得换个姿态重发；<code>ST_UNSOLVABLE</code> 是「看到了但给不出答案」，重试同样姿态没有意义。两者的处置方式不同，不能混。'})
+    ]
+  },
+
+  busy: {
+    name: '重复请求（处理中）',
+    desc: '电控重发间隔比视觉处理时间短时会发生什么。',
+    steps: [
+      S('note',  {text: '电控发请求（任务码 2），视觉开始等转盘停稳。'}),
+      S('frame', {dir: 'down', f: reqTurntable(9), what: '请求 · 任务码 2'}),
+      S('wait',  {text: '视觉正在处理：连续取帧，判定还没通过'}),
+      S('note',  {text: '电控等得不耐烦（或它的超时设得太短），重发同一个请求。<code>seq</code> 与内容都不变。'}),
+      S('frame', {dir: 'down', f: reqTurntable(9), what: '请求 · 任务码 2（重发）', tag: 're', tagText: 'seq 不变'}),
+      S('note',  {text: '视觉认出「同一个请求、还在处理中」：<b>不重置计时</b>，只往日志里记一条 <code>DUPLICATE_WHILE_BUSY</code>，然后继续等。'}),
+      S('note',  {text: '如果这里重置计时，电控的发包间隔一旦短于视觉的处理时间，超时永远不会到——转盘永远等不到「放弃」，扫码也永远等不到，表现就是「视觉永远不回」。'}),
+      S('wait',  {text: '转盘停住，判定通过'}),
+      S('frame', {dir: 'up', f: resTurntable(10, 9, 0, 4), what: '结果 · 任务码 2 · ST_OK · 颜色 4', ok: true}),
+      S('note',  {text: '只有一帧结果。两次请求、一次测量：<code>DUPLICATE_WHILE_BUSY</code> 出现得多说明电控重发间隔偏短，但不影响结果。'})
+    ]
+  },
+
+  bad: {
+    name: '不合法请求',
+    desc: '任务码不认识、载荷长度不对。这类错误只应来自实现不匹配。',
+    steps: [
+      S('note',  {text: '电控发了一个任务码 9 的请求——协议里没有这条。'}),
+      S('frame', {dir: 'down', f: {seq: 21, cmd: CMD_REQUEST, data: [9]}, what: '请求 · 任务码 9（不存在）', tag: 'bad', tagText: '非法'}),
+      S('frame', {dir: 'up', f: {seq: 22, cmd: CMD_RESULT, data: [21, 9, 3]}, what: '结果 · 回显任务码 9 · ST_BAD_REQUEST', tag: 'bad', tagText: '不合法', ok: true}),
+      S('note',  {text: '视觉<b>回显收到的任务码</b>，方便电控查是谁发错了。这一帧只有 3 字节正文（<code>echo_seq + 任务码 + status</code>）——任务码不认识时无从知道该按哪个长度补齐，所以不补。电控按状态码处理即可，不必解析正文。'}),
+      S('note',  {text: '这种错误不该盲目重试：重试只会重复同一个错误。它只应来自实现不匹配（任务码不在 1~3、载荷长度与表 1-6 不符、请求为空）。'}),
+      S('note',  {text: '不合法请求<b>不写入去重缓存</b>：它不该覆盖上一条好请求的答案，否则一条残帧就能让「原样重发上次结果」失效，电控白等一轮。'}),
+      S('note',  {text: '连续 <b>5 个</b>不合法请求 → 进入 <code>SAFESTOP</code>，之后不再响应任何帧。连续出错说明两边实现已经对不上，继续答只会产生垃圾数据，而垃圾数据比没有数据更危险。中间成功服务过一次就重新计数。'})
+    ]
+  }
+};
+
+// ============================================================ 渲染：帧字节
+function s16(lo, hi) {
+  const v = (lo | (hi << 8)) & 0xFFFF;
+  return v >= 0x8000 ? v - 0x10000 : v;
+}
+function h2(b) { return b.toString(16).toUpperCase().padStart(2, '0'); }
+
+/** 返回分组后的字节数组，供 hex 渲染与字段表使用。 */
+function analyze(f) {
+  const enc = encode(f.seq, f.cmd, f.data);
+  const isRes = f.cmd === CMD_RESULT;
+  const task = isRes ? f.data[1] : f.data[0];
+  const cells = [];
+  const rows = [];
+
+  function push(name, cls, arr, val) {
+    rows.push({name, cls, hex: arr.map(h2).join(' '), val});
+    for (const b of arr) cells.push({b, cls});
+  }
+
+  push('SOF 帧起始', 'g-sof', enc.bytes.slice(0, 1), '0xA5 固定');
+  push('data_length', 'g-len', enc.bytes.slice(1, 3), enc.dl + '（含命令码 2 字节，小端）');
+  push('seq', 'g-seq', enc.bytes.slice(3, 4), f.seq + (isRes ? '（视觉自己递增）' : '（电控自己递增）'));
+  push('CRC8', 'g-crc8', enc.bytes.slice(4, 5), '0x' + h2(enc.c8) + '（覆盖前 4 字节）');
+  push('cmd_id', 'g-cmd', enc.bytes.slice(5, 7),
+       isRes ? '0x0011 结果' : '0x0010 请求');
+
+  // data 内部分组
+  let i = 7;
+  if (isRes) {
+    push('echo_seq', 'g-seq', [enc.bytes[i]], '回显请求的 seq：' + enc.bytes[i]);
+    i++;
+    push('任务码', 'g-task', [enc.bytes[i]], enc.bytes[i] + ' ' + (TASK_NAME[enc.bytes[i]] || '（未知，协议里没有这个码）'));
+    i++;
+    push('status', 'g-task', [enc.bytes[i]], enc.bytes[i] + ' ' + ST_NAME[enc.bytes[i]]);
+    i++;
+    const body = enc.bytes.slice(i, enc.bytes.length - 2);
+    if (task === TASK_SCAN) {
+      const allZero = body.every(b => b === 0);
+      push('任务计划', 'g-body', body,
+           allZero
+             ? '16 字节全 0：失败帧。长度仍按任务码补齐，但正文不得使用'
+             : '16 字节：4 组颜色 / 靶号 + 1 个校验字节，与二维码解析结果逐字节一致');
+    } else if (task === TASK_TURNTABLE) {
+      push('颜色编号', 'g-body', body, body[0] + (body[0] ? '（1~6，与任务计划同一套编号）' : '（占位 0，不得使用）'));
+    } else if (task === TASK_ALIGN) {
+      const d = s16(body[0], body[1]);
+      const a = s16(body[2], body[3]);
+      push('d', 'g-body', body.slice(0, 2), d + ' mm（int16，正为前进）');
+      push('α', 'g-body', body.slice(2, 4), (a / 10).toFixed(1) + '°（int16，0.1° 单位）');
+    } else if (body.length) {
+      push('正文', 'g-body', body, '按任务码补齐');
+    }
+  } else {
+    push('任务码', 'g-task', [enc.bytes[i]], enc.bytes[i] + ' ' + (TASK_NAME[enc.bytes[i]] || '未知'));
+    i++;
+    const body = enc.bytes.slice(i, enc.bytes.length - 2);
+    if (task === TASK_ALIGN) {
+      const l = body[0] | (body[1] << 8);
+      const a = s16(body[2], body[3]);
+      push('l', 'g-body', body.slice(0, 2), l + ' mm（uint16，水平伸出长度）');
+      push('α 当前', 'g-body', body.slice(2, 4), (a / 10).toFixed(1) + '°（int16，0.1° 单位）');
+    } else if (body.length) {
+      push('正文', 'g-body', body, '按任务码');
+    }
+  }
+
+  const c16v = enc.bytes[enc.bytes.length - 2] | (enc.bytes[enc.bytes.length - 1] << 8);
+  push('CRC16', 'g-crc16', enc.bytes.slice(enc.bytes.length - 2),
+       '0x' + c16v.toString(16).toUpperCase().padStart(4, '0') + '（整包校验，小端）');
+
+  return {cells, rows, total: enc.bytes.length};
+}
+
+const SWATCH = {
+  'g-sof': '#e6ebf1', 'g-len': '#e6ebf1', 'g-seq': '#e3eefb', 'g-crc8': '#eef2f6',
+  'g-cmd': '#dde8f6', 'g-task': '#efe9f8', 'g-body': '#e4f2e7', 'g-crc16': '#fbe9e9'
+};
+
+const insp = document.getElementById('insp');
+
+function showInspector(f, dir) {
+  if (!f) {
+    insp.innerHTML = '<div class="empty">播放后这里显示每一帧的逐字节内容</div>';
+    return;
+  }
+  const a = analyze(f);
+  const hex = a.cells.map((c, i) => {
+    const gap = (i === 4 || i === 6 || i === a.cells.length - 2) ? '<span class="gap"></span>' : '';
+    return gap + '<span class="' + c.cls + '">' + h2(c.b) + '</span>';
+  }).join('');
+
+  const rows = a.rows.map(r =>
+    '<tr><td class="k"><i style="background:' + SWATCH[r.cls] + ';box-shadow:inset 0 0 0 1px #dde5ee"></i>' +
+    r.name + '</td><td class="v">' + r.hex + '</td></tr>'
+  ).join('');
+
+  const notes = a.rows.map(r =>
+    '<tr><td class="k" style="color:#8a97a6">' + r.name + '</td><td>' + r.val + '</td></tr>'
+  ).join('');
+
+  insp.innerHTML =
+    '<div style="font-size:11px;color:#8a97a6;margin-bottom:6px">' +
+      (dir === 'down' ? '电控 → 视觉' : '视觉 → 电控') + '　共 <b style="color:#1b2430">' +
+      a.total + '</b> 字节' +
+    '</div>' +
+    '<div class="hex">' + hex + '</div>' +
+    '<table class="fld"><thead><tr><th>字段</th><th>值</th></tr></thead><tbody>' +
+    notes + '</tbody></table>';
+}
+
+// ============================================================ 渲染：时序图
+const rowsEl = document.getElementById('rows');
+const diagram = document.getElementById('diagram');
+const statEl = document.getElementById('stat');
+
+let curKey = 'full';
+let timers = [];
+let playing = false;
+let idx = 0;
+let speed = 1;
+let counts = {down: 0, up: 0, re: 0};
+let selected = null;
+
+function clearTimers() {
+  for (const t of timers) clearTimeout(t);
+  timers = [];
+}
+
+function reset(keepScene) {
+  clearTimers();
+  playing = false;
+  idx = 0;
+  counts = {down: 0, up: 0, re: 0};
+  selected = null;
+  rowsEl.querySelectorAll('.row').forEach(n => n.remove());
+  showInspector(null);
+  updateStat();
+  document.getElementById('play').textContent = '播放';
+  if (!keepScene) {
+    // 保留当前场景
+  }
+}
+
+function updateStat() {
+  const total = SCENES[curKey].steps.length;
+  const label = playing ? ('第 ' + Math.min(idx, total) + ' / ' + total + ' 步') : '待播放';
+  statEl.innerHTML = label + '　请求 <b>' + counts.down + '</b>　结果 <b>' +
+    counts.up + '</b>　重发 <b>' + counts.re + '</b>';
+}
+
+function delayOf(s) {
+  if (s.t === 'wait') return 1650;
+  if (s.t === 'frame') return 1150;
+  return 1250;
+}
+
+function addNote(s) {
+  const d = document.createElement('div');
+  d.className = 'row note' + (s.ok ? ' ok' : '') + (s.hi ? ' hi' : '');
+  d.innerHTML = '<div class="txt">' + s.text + '</div>';
+  return d;
+}
+
+function addWait(s) {
+  const d = document.createElement('div');
+  d.className = 'row wait';
+  d.innerHTML = '<div class="pill"><span class="dots"><i></i><i></i><i></i></span>' +
+                s.text + '</div>';
+  return d;
+}
+
+function addFrame(s) {
+  const d = document.createElement('div');
+  d.className = 'row frame';
+  const f = s.f;
+  const len = 9 + f.data.length;
+  const isRes = f.cmd === CMD_RESULT;
+
+  const tags = [];
+  if (s.tag) tags.push('<span class="tag ' + s.tag + '">' + (s.tagText || '') + '</span>');
+
+  const a = document.createElement('div');
+  a.className = 'arrow ' + s.dir + (s.lost ? ' lost' : '');
+  a.innerHTML =
+    (s.lost ? '<span class="x">✕</span>' : '') +
+    '<div class="cap"><b>' + s.what + '</b>' +
+      '<span class="len">　' + len + 'B</span>' + tags.join('') + '</div>' +
+    '<div class="ln"></div>';
+
+  a.addEventListener('click', () => {
+    rowsEl.querySelectorAll('.arrow.sel').forEach(n => n.classList.remove('sel'));
+    a.classList.add('sel');
+    selected = s;
+    showInspector(f, s.dir);
+  });
+
+  d.appendChild(a);
+  s._el = a;
+  return d;
+}
+
+function renderStep(s) {
+  let el;
+  if (s.t === 'note') el = addNote(s);
+  else if (s.t === 'wait') el = addWait(s);
+  else el = addFrame(s);
+
+  rowsEl.appendChild(el);
+  // 触发过渡
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('in')));
+
+  if (s.t === 'frame') {
+    counts[s.dir === 'down' ? 'down' : 'up']++;
+    if (s.tag === 're') counts.re++;
+    // 自动跟随到最新一帧
+    rowsEl.querySelectorAll('.arrow.sel').forEach(n => n.classList.remove('sel'));
+    if (s._el) s._el.classList.add('sel');
+    selected = s;
+    showInspector(s.f, s.dir);
+  }
+  updateStat();
+
+  // 滚到最新一行
+  const target = el.offsetTop + el.offsetHeight + 40;
+  diagram.scrollTo({top: Math.max(0, target - diagram.clientHeight), behavior: 'smooth'});
+}
+
+function tick() {
+  if (!playing) return;
+  const steps = SCENES[curKey].steps;
+  if (idx >= steps.length) {
+    playing = false;
+    document.getElementById('play').textContent = '播放';
+    updateStat();
+    return;
+  }
+  const s = steps[idx++];
+  renderStep(s);
+  updateStat();
+  timers.push(setTimeout(tick, delayOf(s) / speed));
+}
+
+function play() {
+  if (playing) return;
+  if (idx >= SCENES[curKey].steps.length) reset(true);
+  playing = true;
+  document.getElementById('play').textContent = '暂停';
+  tick();
+}
+
+function loadScene(key, autoplay) {
+  curKey = key;
+  reset(true);
+  document.getElementById('desc').textContent = SCENES[key].desc;
+  document.querySelectorAll('.scenes button').forEach(b => {
+    b.classList.toggle('on', b.dataset.k === key);
+  });
+  diagram.scrollTo({top: 0});
+  updateStat();
+  if (autoplay) play();
+}
+
+// 场景按钮
+const scenesEl = document.getElementById('scenes');
+Object.keys(SCENES).forEach(k => {
+  const b = document.createElement('button');
+  b.textContent = SCENES[k].name;
+  b.dataset.k = k;
+  b.addEventListener('click', () => loadScene(k, true));
+  scenesEl.appendChild(b);
+});
+
+document.getElementById('play').addEventListener('click', () => {
+  if (playing) {
+    playing = false;
+    clearTimers();
+    document.getElementById('play').textContent = '播放';
+    updateStat();
+  } else {
+    play();
+  }
+});
+document.getElementById('reset').addEventListener('click', () => reset(true));
+document.getElementById('speed').addEventListener('change', e => {
+  speed = parseFloat(e.target.value);
+});
+
+// ============================================================ 启动
+loadScene('full', true);
+</script>
+</body>
+</html>
