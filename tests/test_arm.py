@@ -1,4 +1,4 @@
-"""机械臂目标解算：三维/平面目标点 → 车沿 x 位移 d + 臂 yaw α。
+"""主圆对准解算：主圆在电机坐标系下的位置 → 车沿 x 的位移 d + 臂 yaw α。
 
 这一层的正确性必须用**正解反查**来验证，而不是只比对算出来的数：
 把解出的 d、α 代回末端位置公式，看是否落在目标点上。公式 `(l·cos α, l·sin α)`
@@ -8,11 +8,10 @@ import math
 
 import pytest
 
-from src.algorithms.arm import (FLAG_SWEEP, FLAG_USABLE, GRADE_BEST,
-                                GRADE_BAD, OUTCOME_MASK, OUTCOME_NO_TARGET,
-                                OUTCOME_OK, OUTCOME_UNREACHABLE, ArmState,
-                                encode_status, mm_per_px_from_ring,
-                                no_target_solution, scale_target, solve_arm)
+from src.algorithms.arm import (GRADE_BAD, GRADE_GOOD, GRADE_MID, ArmState,
+                                mm_per_px_from_ring, no_target_solution,
+                                scale_offset, solve_align)
+from src.core.protocol import ST_NOT_READY, ST_OK, ST_UNSOLVABLE
 
 
 def end_effector(l, d, alpha_deg):
@@ -32,8 +31,8 @@ def end_effector(l, d, alpha_deg):
 ])
 def test_solution_reaches_the_target(x, y, l):
     """正解反查：代回去必须落在目标上，误差在浮点噪声量级。"""
-    sol = solve_arm((x, y), l)
-    assert sol.status & OUTCOME_MASK == OUTCOME_OK
+    sol = solve_align((x, y), l)
+    assert sol.status == ST_OK
     ex, ey = end_effector(l, sol.d_mm, sol.alpha_deg)
     assert abs(ex - x) < 1e-6, f"x 反查得 {ex}，目标 {x}"
     assert abs(ey - y) < 1e-6, f"y 反查得 {ey}，目标 {y}"
@@ -41,100 +40,82 @@ def test_solution_reaches_the_target(x, y, l):
 
 def test_alpha_is_asin_y_over_l():
     l, y = 600.0, 300.0
-    sol = solve_arm((700.0, y), l)
+    sol = solve_align((700.0, y), l)
     assert abs(sol.alpha_deg - math.degrees(math.asin(y / l))) < 1e-9
 
 
 def test_d_is_x_minus_horizontal_reach():
     """d 是「车要往前开多少」，等于 x 减去臂当前能挡住的前伸量。"""
     l, x, y = 600.0, 700.0, 300.0
-    sol = solve_arm((x, y), l)
+    sol = solve_align((x, y), l)
     assert abs(sol.d_mm - (x - l * math.cos(math.radians(sol.alpha_deg)))) < 1e-9
 
 
 def test_centre_target_needs_no_turning():
-    sol = solve_arm((500.0, 0.0), 600.0)
+    sol = solve_align((500.0, 0.0), 600.0)
     assert abs(sol.alpha_deg) < 1e-12
     assert abs(sol.d_mm - (500.0 - 600.0)) < 1e-9, "正前方时 d = x − l"
 
 
 def test_side_sign_follows_y():
     """α 的符号必须与 y 同号，否则臂会朝反方向摆。"""
-    assert solve_arm((700.0, 200.0), 600.0).alpha_deg > 0
-    assert solve_arm((700.0, -200.0), 600.0).alpha_deg < 0
+    assert solve_align((700.0, 200.0), 600.0).alpha_deg > 0
+    assert solve_align((700.0, -200.0), 600.0).alpha_deg < 0
 
 
-def test_unreachable_reports_outcome_not_clamped():
+def test_unreachable_reports_status_not_clamped():
     """|y| > l 时明确报「够不着」，不得钳到边界假装能到。
 
     钳位会给出一个末端其实差几十毫米的「可用」结果，这是最危险的一种失败：
     电控会照它伸手，抓空却不报错。
     """
     l = 600.0
-    sol = solve_arm((700.0, 700.0), l)
-    assert sol.status & OUTCOME_MASK == OUTCOME_UNREACHABLE
-    assert not sol.usable, "够不着时不得置可用位"
+    sol = solve_align((700.0, 700.0), l)
+    assert sol.status == ST_UNSOLVABLE
+    assert not sol.ok
     assert sol.d_mm == 0.0 and sol.alpha_deg == 0.0, "无解时不要给半截答案"
-    # 目标点仍然报回去，便于电控判断「差多少」
+    # 目标点仍然报回去，便于现场排查「差多少」
     assert sol.target == (700.0, 700.0)
 
 
 def test_unreachable_just_past_the_limit():
     l = 600.0
-    assert solve_arm((700.0, 600.0), l).status & OUTCOME_MASK == OUTCOME_OK
-    assert solve_arm((700.0, 600.5), l).status & OUTCOME_MASK == OUTCOME_UNREACHABLE
+    assert solve_align((700.0, 600.0), l).status == ST_OK
+    assert solve_align((700.0, 600.5), l).status == ST_UNSOLVABLE
+
+
+def test_zero_length_is_unsolvable_not_a_crash():
+    """l 为 0 时臂长没有任何意义：报无解，不让异常冒到主循环里。"""
+    sol = solve_align((100.0, 0.0), 0.0)
+    assert sol.status == ST_UNSOLVABLE
 
 
 def test_no_target_solution_is_explicit():
-    """没测到目标时必须报「没测到」，不能编一个 (0,0) 当答案。"""
-    sol = no_target_solution(echo_seq=9)
-    assert sol.status & OUTCOME_MASK == OUTCOME_NO_TARGET
-    assert not sol.usable
-    assert sol.echo_seq == 9
+    """没测到主圆时必须报「没准备好」，不能编一个 (0,0) 当答案。
 
-
-def test_echo_seq_is_carried_through():
-    """echo_seq 必须原样带回，电控靠它配对自己的请求。"""
-    assert solve_arm((700.0, 100.0), 600.0, echo_seq=42).echo_seq == 42
-
-
-def test_zero_length_is_a_programming_error():
-    with pytest.raises(ValueError):
-        solve_arm((100.0, 0.0), 0.0)
-
-
-def test_status_byte_layout():
-    """status：bit0~1 结果、bit4~5 等级、bit7 可用。"""
-    ok = encode_status(OUTCOME_OK, GRADE_BEST)
-    assert ok & OUTCOME_MASK == OUTCOME_OK
-    assert (ok >> 4) & 0x03 == GRADE_BEST
-    assert ok & FLAG_USABLE
-
-    bad = encode_status(OUTCOME_UNREACHABLE, GRADE_BAD)
-    assert bad & OUTCOME_MASK == OUTCOME_UNREACHABLE
-    assert not bad & FLAG_USABLE
-
-
-def test_sweep_flag_when_alpha_passes_90_degrees():
-    """|α| > 90° 时置告警位——那意味着臂会从车身里穿过去。
-
-    ``|y| ≤ l`` 时 asin 的主值不会超过 90°，所以正常解永远不置这一位；
-    保留它是为了将来若改用「另一支解」时能被发现。
+    用「没准备好」而不是「无解」：没测到往往是相机还没伸到位，重发一次可能就好了。
     """
-    sol = solve_arm((700.0, 600.0), 600.0)
-    assert abs(sol.alpha_deg) <= 90.0
-    assert not sol.status & FLAG_SWEEP
+    sol = no_target_solution()
+    assert sol.status == ST_NOT_READY
+    assert not sol.ok
+    assert sol.grade == GRADE_BAD
+
+
+def test_grade_is_carried_through():
+    """质量档只在成功时有意义，并且要能传下去（现场排查靠它）。"""
+    assert solve_align((700.0, 0.0), 600.0, grade=GRADE_GOOD).grade == GRADE_GOOD
+    assert solve_align((700.0, 0.0), 600.0, grade=GRADE_MID).grade == GRADE_MID
 
 
 def test_arm_state_carries_units():
-    """臂状态只带 l 与 α：尺度由视觉自己从靶外圈量，不需要电控报相机高度。"""
-    st = ArmState(l_mm=600.0, alpha_deg=12.3, seq=7)
+    """臂状态只带 l 与 α：尺度由视觉自己从主圆外圈量，不需要电控报相机高度。"""
+    st = ArmState(l_mm=600.0, alpha_deg=12.3)
     assert st.l_mm == 600.0
-    assert st.alpha_deg == 12.3 and st.seq == 7
+    assert st.alpha_deg == 12.3
     assert not hasattr(st, "h_mm")
 
 
-# ---------- 尺度：从参考靶外圈直径反算 ----------
+# ---------- 尺度：从主圆外圈直径反算 ----------
 
 def test_scale_from_ring_uses_outer_diameter():
     """外圈直径 120mm、画面里测到半径 60px → 1.0 mm/px。"""
@@ -142,7 +123,7 @@ def test_scale_from_ring_uses_outer_diameter():
 
 
 def test_scale_from_ring_inverse():
-    """反查：同一尺寸的靶在画面里越小，说明拍得越高、每像素对应的毫米越多。"""
+    """反查：同一个圆在画面里越小，说明拍得越高、每像素对应的毫米越多。"""
     near = mm_per_px_from_ring(100.0, 120.0)
     far = mm_per_px_from_ring(50.0, 120.0)
     assert far == pytest.approx(near * 2.0)
@@ -159,11 +140,11 @@ def test_scale_from_ring_rejects_non_positive_diameter():
         mm_per_px_from_ring(50.0, 0.0)
 
 
-def test_scale_target_maps_pixel_offset_to_mm():
-    """靶心在画面中心右侧 40px、下方 30px，1.5 mm/px → (60, 45)mm。"""
-    assert scale_target((540.0, 510.0), (500.0, 480.0), 1.5) == pytest.approx((60.0, 45.0))
+def test_scale_offset_maps_pixel_offset_to_mm():
+    """像素偏移 (40, 30)、1.5 mm/px → (60, 45)mm。"""
+    assert scale_offset((40.0, 30.0), 1.5) == pytest.approx((60.0, 45.0))
 
 
-def test_scale_target_is_zero_at_pivot():
-    """靶心正好落在转轴投影上时偏移必须是零，不允许留系统性残差。"""
-    assert scale_target((500.0, 480.0), (500.0, 480.0), 1.234) == pytest.approx((0.0, 0.0))
+def test_scale_offset_is_zero_at_pivot():
+    """偏移为零时必须是零，不允许留系统性残差。"""
+    assert scale_offset((0.0, 0.0), 1.234) == pytest.approx((0.0, 0.0))

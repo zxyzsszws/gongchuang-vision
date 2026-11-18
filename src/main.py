@@ -1,95 +1,87 @@
 """入口装配：python -m src.main --config config/default.yaml --mode sim|live|replay
 
-v2.0.0 的分工是「视觉只测量、电控全规划」，因此装配比 v1.0.0 简单得多：
-没有位姿滤波器、没有校准闭环、没有导航与动作指令——那些职责都已归还电控。
+V2.2.0 的视觉只做三件事，全部**按需应答**，所以装配很轻：没有位姿滤波器、
+没有校准闭环、没有周期上报，也没有场地图——视觉不再需要知道自己在场地哪里。
 
-- sim：MockMcu（带里程漂移）+ SimScene 合成感知，虚拟时钟逐步驱动，完全可复现。
+- sim：MockMcu + SimScene 合成感知，虚拟时钟逐步驱动，完全可复现。
 - live/replay：make_camera 相机帧驱动 VisionPerceive，链路为真实串口 SerialLink。
-  live/replay 必须提供 ``camera_calib_file``（像素→车身毫米的外参），否则三靶
-  观测无法换算成毫米，位姿解不出来；此时 ``targets()`` 返回 None，视觉会安静地
-  不发位姿——这比拿像素当毫米发出去安全，但等于没有定位能力，故仍拒绝启动。
+  ``camera_calib_file`` 应当提供：任务 2（转盘颜色）的尺度只能来自外参，缺了会
+  一律回「没准备好」；任务 3（对准主圆）的尺度从主圆外圈实测反算，不依赖外参，
+  只有外圈也量不到时才回「没准备好」。两种情况都不会瞎猜尺度。
 """
 import argparse
 import time
 
-from .algorithms.fieldmap import load_field_map
-from .algorithms.types import Pose
-from .config import cfg_get, load_config
+from .config import load_config
 from .core.fsm import MatchFSM
-from .devices.link import DEFAULT_ROUTE, MockMcu, SerialLink
+from .core.protocol import TASK_ALIGN, TASK_SCAN, TASK_TURNTABLE
+from .devices.link import MockMcu, SerialLink
 from .devices.sim_scene import SimScene
 from .logsetup import setup_logging
 
 
-class ExtrinsicsRequired(RuntimeError):
-    """live/replay 缺少相机外参：像素无法换算成毫米，定位能力为零。"""
-
-
-def _sim_waypoints(field, route):
-    """把 ``route`` 里每个区域换成场地图上的标称停位，供 MockMcu 连线行驶。
-
-    没有航点时 MockMcu 只能沿 +x 一直开，几段之后就跑到场外（x 上万毫米），
-    模拟出来的「位姿」显然不可能是真实赛况。用 ``region_poses`` 连线后，车会
-    在原料区、粗加工区、暂存区之间来回走，坐标始终落在场地范围内。
-    """
-    out = []
-    for region in route:
-        pose = field.pose_for_region(region)
-        if pose is None:
-            raise ValueError(
-                f"场地图缺少区域 {region} 的标称停位：sim 无法生成行驶路线。"
-                f"请在 field 配置的 region_poses 里补上 material/rough/staging")
-        out.append(pose)
-    return out
-
-
-def _build_sim(cfg, field):
+def _build_sim(cfg):
     sim_cfg = cfg.get("sim") or {}
-    mcu = MockMcu(drift_mm_per_m=sim_cfg.get("drift_mm_per_m", 8.0),
-                  drift_deg_per_m=sim_cfg.get("drift_deg_per_m", 0.1),
-                  leg_mm=sim_cfg.get("leg_mm", 1200.0),
-                  speed_mm_s=sim_cfg.get("speed_mm_s", 1200.0),
-                  waypoints=_sim_waypoints(field, DEFAULT_ROUTE),
-                  apply_pose=True)
-    scene = SimScene(field, jitter_mm=sim_cfg.get("jitter_mm", 0.3),
-                     omega01=sim_cfg.get("turntable_omega01", 600))
+    # 视觉不再上报位姿，模拟器也就不需要里程漂移这些参数了。
+    mcu = MockMcu()
+    scene = SimScene(jitter_mm=sim_cfg.get("jitter_mm", 0.3),
+                     omega01=sim_cfg.get("turntable_omega01", 600),
+                     stop_after_s=sim_cfg.get("turntable_stop_after_s"))
     return mcu, scene
 
 
-def _build_live(cfg, field):
+def _build_live(cfg, mode):
     from .algorithms.geometry import load_camera_calib
     from .devices.camera import make_camera
     from .devices.vision import VisionPerceive
 
+    calib = None
     calib_path = cfg.get("camera_calib_file")
-    if not calib_path:
-        raise ExtrinsicsRequired(
-            "live/replay 需要 camera_calib_file（相机安装外参）：像素观测必须换算到"
-            "车身毫米才能解位姿。先跑 tools/calibrate_camera.py 标定，或在 config "
-            "里指向已有标定文件。")
-    calib = load_camera_calib(calib_path)
-    cam = make_camera(cfg, cfg.get("mode", "live"))
+    if calib_path:
+        calib = load_camera_calib(calib_path)
+    if calib is None:
+        # 启动时不拦，但要大声说出来：没有外参时任务 2 会一直回「没准备好」，
+        # 现场很容易误判成「没看到东西」而去乱调阈值。任务 3 不受影响——
+        # 它的尺度从主圆外圈实测反算，只有外圈也量不到时才用外参兜底。
+        print("[警告] 没有可用相机外参：任务 2（转盘颜色）将一律回 ST_NOT_READY。"
+              "任务 3（对准主圆）仍可工作，但外圈量不到时也会失败。"
+              "请按 README §6 标定并设置 camera_calib_file。")
+    cam = make_camera(cfg, mode)
     link = SerialLink(cfg["serial"]["port"], cfg["serial"]["baudrate"])
-    return link, VisionPerceive(cam, cfg, calib=calib, field=field)
+    return link, VisionPerceive(cam, cfg, calib=calib)
+
+
+def _sim_dialog(mcu, now):
+    """模拟电控按比赛流程问话：扫码 → 问取料点颜色 → 问对准。
+
+    这里刻意写得像真实电控：**只在需要的时候问，问完等结果**。视觉不知道
+    「现在该干什么」，完全由这几帧请求驱动。
+    """
+    if TASK_SCAN not in mcu.requests:
+        mcu.request_scan(now)
+    elif mcu.plan is not None and TASK_TURNTABLE not in mcu.requests:
+        mcu.request_turntable(now)
+    elif mcu.colors and TASK_ALIGN not in mcu.requests:
+        mcu.request_align(now)
 
 
 def run(cfg_path, mode, max_seconds=120.0):
     cfg = load_config(cfg_path)
-    field = load_field_map(cfg_get(cfg, "field_file"))
 
     if mode == "sim":
-        link, perceive = _build_sim(cfg, field)
+        link, perceive = _build_sim(cfg)
     else:
-        link, perceive = _build_live(dict(cfg, mode=mode), field)
+        link, perceive = _build_live(dict(cfg, mode=mode), mode)
 
-    fsm = MatchFSM(cfg, link, field, perceive)
+    fsm = MatchFSM(cfg, link, perceive)
 
     if mode == "sim":
         # 虚拟时钟：固定 dt 逐步驱动，无墙钟竞态 → e2e 完全确定性、可复现。
-        # 视觉是测量仪器，没有「跑完」这个终态，循环只由时限与安全停止终止。
         now, dt = 0.0, 0.02
         while now < max_seconds and fsm.state != "SAFESTOP":
-            _drive_sim(link, perceive, now, dt)
+            link.tick(now)
+            _sim_dialog(link, now)
+            perceive.advance(dt)
             fsm.step(now)
             now += dt
     else:
@@ -98,18 +90,6 @@ def run(cfg_path, mode, max_seconds=120.0):
             fsm.step(time.monotonic() - t0)
             time.sleep(0.02)
     return fsm
-
-
-def _drive_sim(link, scene, now, dt):
-    """推进 sim 世界：电控按路线行驶 → 场景按真值投影 → 转盘继续转。
-
-    顺序有意义：先让电控走（可能刚好驶入新区域并发出 0x0005），再让场景按电控
-    的**真值**位置生成观测，最后才驱动 FSM。这样 FSM 在 ``step`` 里读到的是同一
-    时刻的世界状态，与真实系统的时序一致。
-    """
-    link.tick(now)
-    scene.pose_truth = Pose(link.true_x, link.true_y, link.true_h)
-    scene.advance(dt)
 
 
 def main(argv=None):
@@ -122,17 +102,13 @@ def main(argv=None):
     cfg = load_config(args.config)
     setup_logging(cfg.get("log_dir", "logs"))  # 结构化 JSONL 运行日志（复盘用）
     mode = args.mode or cfg.get("mode", "sim")
-    try:
-        fsm = run(args.config, mode, max_seconds=args.max_seconds)
-    except ExtrinsicsRequired as e:
-        print(f"error: {e}")
-        return 2
+    fsm = run(args.config, mode, max_seconds=args.max_seconds)
     for e in fsm.log_events:  # 状态迁移与关键事件
         print(e)
-    # 视觉单元是测量仪器，不判断比赛何时结束，因此没有「完成」这个终态。
+    # 视觉单元是按需应答的仪器，不判断比赛何时结束，因此没有「完成」这个终态。
     # 退出码只区分「正常运行到时限」与「进入安全停止」。
-    print(f"final_state={fsm.state} poses={fsm._pose_sent} "
-          f"turntables={fsm._turntable_sent}")
+    print(f"final_state={fsm.state} "
+          f"counts={fsm.counts} bad={fsm.bad_requests} resends={fsm.resends}")
     return 0 if fsm.state != "SAFESTOP" else 1
 
 

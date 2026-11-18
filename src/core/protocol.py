@@ -1,4 +1,4 @@
-"""串口帧编解码（帧布局见 `docs/protocol-v2.1.0.md` 表 1-2~1-4）。
+"""串口帧编解码 + V2.2.0 的命令与任务码（文档 `docs/protocol-v2.2.0.md`）。
 
 帧结构：
 
@@ -19,6 +19,15 @@
 2. 坏帧（data_length 越界、CRC8 不符、CRC16 不符）→ **只丢 1 字节**后从下一个
    0xA5 重新找帧，绝不整段清空。这样粘包时一帧损坏不会连带丢掉其后的好帧。
 3. data 内部出现 0xA5 不会误判为帧头（靠 CRC8 + CRC16 双重校验排除）。
+
+## V2.2.0 只有两条命令
+
+    CMD_REQUEST  电控→视觉   我要一件测量结果，任务码说明要哪一件
+    CMD_RESULT   视觉→电控   这是结果，带回请求的 seq
+
+没有心跳，没有独立的应答帧，也没有 done。**结果帧本身就是应答**：电控等不到
+结果就重发原请求，视觉见到同一个 seq 就把上次的结果原样再发一遍。一条往返
+说清一件事，加任务时只加任务码、不加命令码。
 """
 import struct
 from dataclasses import dataclass
@@ -27,58 +36,73 @@ from .crc import crc8, crc16
 
 SOF = 0xA5
 HEADER_LEN = 5       # SOF(1) + data_length(2) + seq(1) + CRC8(1)
-CMD_ID_LEN = 2       # cmd_id
+ID_FIELD_LEN = 2     # cmd_id 占 2 字节（注意不是命令码常量，命名刻意避开 CMD_ 前缀）
 TAIL_LEN = 2         # frame_tail（CRC16）
-OVERHEAD = HEADER_LEN + CMD_ID_LEN + TAIL_LEN   # 9
+OVERHEAD = HEADER_LEN + ID_FIELD_LEN + TAIL_LEN   # 9
 
 # data_length 的合法区间：至少容纳 cmd_id，上限取 1024 以便在乱流里早放弃同步。
-MIN_DATA_LENGTH = CMD_ID_LEN
+MIN_DATA_LENGTH = ID_FIELD_LEN
 MAX_DATA_LEN = 1024
 MAX_DATA_LENGTH = MIN_DATA_LENGTH + MAX_DATA_LEN
 
 # ---------- 命令码（对应文档「表 1-5 命令码 ID 一览」） ----------
-# 0x00xx：视觉单元 → 机器人主控；0x02xx 保留给反向。
-# V2.1.0 取消了心跳：周期性帧（位姿、转盘）本身就是链路活跃的信号，
-# 而真正依赖往返的只有「臂解算」这一处，那一处用应答超时 + 重试兜底。
-CMD_TASK_PLAN = 0x0002
-CMD_POSE = 0x0003
-CMD_TURNTABLE = 0x0004
-CMD_REGION = 0x0005
-CMD_ARM_STATE = 0x0006      # 电控→视觉：臂状态（l、α、目标编号）
-CMD_ACK = 0x0007            # 双向：应答 / done
-CMD_ARM_SOLUTION = 0x0008   # 视觉→电控：解算结果（d、α）
+CMD_REQUEST = 0x0010       # 电控→视觉：请求一次测量
+CMD_RESULT = 0x0011        # 视觉→电控：测量结果（即应答）
 
 # 不再使用：收到应静默丢弃并计数，不得视为错误。
 #   0x0001 —— V2.1.0 取消心跳
+#   0x0002/0x0003/0x0004 —— V2.2.0 改为按需请求，不再主动上报；任务计划并入
+#                            CMD_RESULT 任务码 1，位姿上报整体取消
+#   0x0005 —— V2.2.0 取消区域提示（视觉已不需要知道自己在哪个区域）
+#   0x0006/0x0007/0x0008 —— V2.2.0 并入 CMD_REQUEST/CMD_RESULT 的任务码 3
 #   0x0201/0x0202/0x0203 —— V2.0.0 已删除（主控上报位姿 / 主控状态 / 动作完成）
-RETIRED_CMDS = frozenset({0x0001, 0x0201, 0x0202, 0x0203})
+RETIRED_CMDS = frozenset({0x0001, 0x0002, 0x0003, 0x0004, 0x0005,
+                          0x0006, 0x0007, 0x0008,
+                          0x0201, 0x0202, 0x0203})
 
-# 去向提示取值（文档「表 1-10」）
-REGION_MATERIAL = 1     # 原料区（转盘）
-REGION_ROUGH = 2        # 粗加工区
-REGION_STAGING = 3      # 暂存区
-REGION_START = 4        # 起点
+# ---------- 任务码（对应文档「表 1-6 任务码一览」） ----------
+TASK_SCAN = 1           # 扫码，取 16 字节任务计划
+TASK_TURNTABLE = 2      # 转盘上此刻停在取料点的是哪个颜色
+TASK_ALIGN = 3          # 把相机对准主圆，回 d 与 α
 
-# 各命令的 data 长度（字节）。文档「表 1-5」的「数据段长度」列与此一致，
-# 由 tests/test_protocol_doc.py 双向对账。
-DATA_LEN = {
-    CMD_TASK_PLAN: 16,
-    CMD_POSE: 9,
-    CMD_TURNTABLE: 16,
-    CMD_REGION: 1,
-    CMD_ARM_STATE: 5,
-    CMD_ACK: 2,
-    CMD_ARM_SOLUTION: 10,
+TASKS = (TASK_SCAN, TASK_TURNTABLE, TASK_ALIGN)
+
+# 请求的数据段长度（含任务码那 1 字节）。文档「表 1-6」的「请求长度」列。
+REQ_LEN = {
+    TASK_SCAN: 1,           # 任务码
+    TASK_TURNTABLE: 1,      # 任务码
+    TASK_ALIGN: 5,          # 任务码 + l(2) + α(2)
 }
 
-# 需要应答的帧：其余帧是周期测量或单向提示，不应答。
-# 0x0006 的应答就是 0x0008（业务帧即应答），所以它不在这里。
-EXPECTS_ACK = frozenset({CMD_TASK_PLAN, CMD_ARM_SOLUTION})
+# 结果的数据段长度（含 echo_seq、任务码、状态那 3 字节）。文档「表 1-6」。
+RES_LEN = {
+    TASK_SCAN: 19,          # 3 + 16 字节任务计划
+    TASK_TURNTABLE: 4,      # 3 + 颜色 1 字节
+    TASK_ALIGN: 7,          # 3 + d(2) + α(2)
+}
 
-# 0x0007 的结果字节
-ACK_OK = 0          # 收到并执行完
-ACK_DUPLICATE = 1   # 重复请求，本次不再执行（原请求已执行过）
-ACK_FAILED = 2      # 收到但无法执行（数据不合法、当前状态不允许等）
+# 两条命令的 data 长度不固定（随任务码变），所以 DATA_LEN 只记「最短合法长度」，
+# 供解析时做下限检查；逐任务的精确长度看 REQ_LEN / RES_LEN。
+DATA_LEN = {
+    CMD_REQUEST: min(REQ_LEN.values()),
+    CMD_RESULT: min(RES_LEN.values()),
+}
+
+# ---------- 状态码（结果帧第 3 字节，对应文档「表 1-8」） ----------
+ST_OK = 0               # 成功，正文可直接使用
+ST_NOT_READY = 1        # 还没准备好 / 没测到：稍后重发同一个请求
+ST_UNSOLVABLE = 2       # 测到了但无解或不可信：换个姿态再来，别沿用
+ST_BAD_REQUEST = 3      # 任务码不认识、载荷长度不对：实现不匹配，需要人查
+
+STATUS_NAMES = {
+    ST_OK: "成功",
+    ST_NOT_READY: "没准备好",
+    ST_UNSOLVABLE: "无解或不可信",
+    ST_BAD_REQUEST: "请求不合法",
+}
+
+# ---------- 颜色编号（与任务计划里的颜色一致，0 表示认不出） ----------
+COLOR_UNKNOWN = 0
 
 
 @dataclass(frozen=True)
@@ -100,7 +124,7 @@ def encode(frame: Frame) -> bytes:
     if len(data) > MAX_DATA_LEN:
         raise ValueError(f"data 最长 {MAX_DATA_LEN} 字节，收到 {len(data)}")
 
-    data_length = CMD_ID_LEN + len(data)
+    data_length = ID_FIELD_LEN + len(data)
     header = struct.pack("<BHB", SOF, data_length, frame.seq)
     header += bytes([crc8(header)])                     # CRC8 在偏移 4
     body = header + struct.pack("<H", frame.cmd_id) + data

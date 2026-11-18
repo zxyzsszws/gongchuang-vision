@@ -1,14 +1,17 @@
-"""同心圆参考靶检测：圆拟合、聚类、排序、抗噪（像素域，纯函数）。"""
+"""同心圆主圆检测：圆拟合、聚类、挑选、抗噪（像素域，纯函数）。
+
+V2.2.0 只挑「离画面中心最近的那个主圆」，不再给三个共线靶排序——排序是位姿
+解算的一部分，已随位姿上报一起下架。
+"""
 import math
 import random
 
 import cv2
 import numpy as np
-import pytest
 
 from src.algorithms.ring_detect import (TargetObs, cluster_concentric,
                                         detect_circles, detect_targets,
-                                        order_targets)
+                                        pick_main)
 
 
 def _target(cx, cy, radii=(20, 30, 40, 50, 60), jitter=0.4, seed=0):
@@ -92,65 +95,35 @@ def test_center_accuracy_better_than_single_ring():
     assert m < 0.5, f"0.5px 抖动时多圈圆心误差应明显小于 0.5px，实际 {m:.3f}px"
 
 
-# ---------- 排序 ----------
+# ---------- 挑主圆 ----------
 
-def test_order_targets_left_to_right_on_horizontal_line():
-    pts = [TargetObs((700.0, 190.0), 60.0, 5),
-           TargetObs((100.0, 200.0), 60.0, 5),
-           TargetObs((400.0, 210.0), 60.0, 5)]
-    ordered, collinear = order_targets(pts)
-    assert [round(t.center[0]) for t in ordered] == [100, 400, 700]
-    assert collinear
+def test_pick_main_prefers_the_one_nearest_the_centre():
+    """主圆就是画面中心附近那个；边上的靶即使圈数更多也不该被选走。
 
-
-def test_order_targets_on_vertical_line():
-    """车正对靶排时三点在画面里是竖着排的，「左右」无意义，必须沿连线排。
-
-    排序方向做了规范化（+x 优先、同 x 取 +y），因此竖排时会自上而下或自下而上，
-    具体朝哪边不重要——哪一端是 1 号本来就未知（180° 歧义）。重要的是**沿连线
-    单调**：中间点必须落在两端之间。
+    电控已经把臂伸到放置点上方，主圆必然靠近光轴，所以「离中心最近」比「圈数
+    最多」更可靠：反光切断某一圈时圈数会变，但位置不会突然跳到画面上。
     """
-    pts = [TargetObs((302.0, 400.0), 60.0, 5),
-           TargetObs((300.0, 100.0), 60.0, 5),
-           TargetObs((298.0, 700.0), 60.0, 5)]
-    ordered, collinear = order_targets(pts)
-    assert collinear
-    ys = [t.center[1] for t in ordered]
-    assert min(ys) == 100 and max(ys) == 700
-    assert sorted(ys)[1] == ys[1], f"中间点必须在两端之间，实际 {ys}"
-    # 相邻间距相等（三点等距排列）
-    assert abs(abs(ys[1] - ys[0]) - abs(ys[2] - ys[1])) < 1e-6
+    near = TargetObs((330.0, 245.0), 60.0, 3)
+    far_more_rings = TargetObs((600.0, 100.0), 80.0, 6)
+    assert pick_main([far_more_rings, near], (320.0, 240.0)) is near
 
 
-def test_order_targets_detects_non_collinear():
-    pts = [TargetObs((100.0, 100.0), 60.0, 5),
-           TargetObs((300.0, 400.0), 60.0, 5),
-           TargetObs((500.0, 100.0), 60.0, 5)]
-    ordered, collinear = order_targets(pts)
-    assert not collinear, "明显不共线必须报出来（门控交给调用方，但信息不能藏）"
-    assert len(ordered) == 3
+def test_pick_main_breaks_ties_by_ring_count():
+    """距离相同时取圈数多的：圈数多说明圆心更可靠。"""
+    a = TargetObs((330.0, 240.0), 60.0, 2)
+    b = TargetObs((310.0, 240.0), 60.0, 5)
+    assert pick_main([a, b], (320.0, 240.0)) is b
 
 
-def test_order_targets_with_fewer_than_three():
-    pts = [TargetObs((100.0, 100.0), 60.0, 5)]
-    ordered, collinear = order_targets(pts)
-    assert ordered == pts and not collinear
+def test_pick_main_returns_none_when_empty():
+    assert pick_main([], (320.0, 240.0)) is None
 
 
-def test_order_targets_is_rotation_invariant():
-    """三点连线方向任意旋转，排序结果仍是「沿连线一端到另一端」。"""
-    for ang in (0, 30, 90, 135, 200, 315):
-        a = math.radians(ang)
-        base = [(-100.0, 0.0), (0.0, 0.0), (100.0, 0.0)]
-        pts = [TargetObs((300 + x * math.cos(a) - y * math.sin(a),
-                          300 + x * math.sin(a) + y * math.cos(a)), 60.0, 5)
-               for x, y in base]
-        ordered, collinear = order_targets(pts)
-        assert collinear
-        c0, c1, c2 = [t.center for t in ordered]
-        d1 = math.hypot(c1[0] - c0[0], c1[1] - c0[1])
-        d2 = math.hypot(c2[0] - c1[0], c2[1] - c1[1])
-        assert abs(d1 - 100) < 1e-6 and abs(d2 - 100) < 1e-6
+def test_pick_main_skips_clusters_below_min_rings():
+    """圈数不足的簇不算靶——它的圆心没有多圈约束，位置不可信。"""
+    weak = TargetObs((321.0, 240.0), 30.0, 1)
+    assert pick_main([weak], (320.0, 240.0)) is None
+    assert pick_main([weak], (320.0, 240.0), min_rings=1) is weak
 
 
 # ---------- 轮廓圆检出 ----------
@@ -173,7 +146,7 @@ def test_detect_circles_finds_concentric_rings_exactly():
 
 
 def test_detect_circles_rejects_non_circular_contours():
-    """矩形不是圆，必须被圆度门限挡住。"""
+    """矩形不是圆，必须被充满度门限挡住。"""
     img = np.full((480, 640, 3), 255, np.uint8)
     cv2.rectangle(img, (100, 100), (200, 200), (0, 0, 0), 2)
     assert detect_circles(img, {"search_radius": [20, 200]}) == []
@@ -204,10 +177,11 @@ def test_detect_targets_drops_lone_circle_target():
     assert len(out) == 3, "孤立单圈不得被当成第四个靶"
 
 
-def test_detect_targets_result_feeds_order_and_solve():
-    """端到端：合成图像 → 检出 → 排序，三点必须共线。"""
+def test_detect_targets_result_feeds_pick_main():
+    """端到端：合成图像 → 检出 → 挑中心那个，中心靶必须被选中。"""
     img = _ring_image([150, 320, 490])
     out = detect_targets(img, {"search_radius": [20, 70], "min_rings": 3})
-    ordered, collinear = order_targets(out)
-    assert collinear and len(ordered) == 3
-    assert [round(t.center[0]) for t in ordered] == [150, 320, 490]
+    main = pick_main(out, (320.0, 240.0))
+    assert main is not None
+    assert abs(main.center[0] - 320) < 3
+    assert abs(main.radius_px - 50) < 4, "外圈半径必须报出来，尺度靠它反算"

@@ -1,4 +1,4 @@
-"""任务计划：二维码四组数字 → 0x0002 的 16 字节数据段（对应文档「表 1-7」）。
+"""任务计划：二维码四组数字 → 结果帧任务码 1 的 16 字节正文（对应文档「表 1-8.2」）。
 
 ## 二维码语义
 
@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from ..algorithms.qr_parse import qr_parse
 
-# 状态字节各位（文档「表 1-7」）
+# 校验字节各位（文档「表 1-8.2」）
 STATUS_COLORS_PAIRABLE = 0x01
 STATUS_BATCH1_PERMUTATION = 0x04
 STATUS_BATCH2_PERMUTATION = 0x08
@@ -41,7 +41,7 @@ class TaskPlanError(ValueError):
 
 @dataclass(frozen=True)
 class TaskPlan:
-    """一份可直接打包成 0x0002 的完整任务计划。"""
+    """一份可直接作为任务码 1 结果正文的完整任务计划（16 字节）。"""
 
     batch1_colors: tuple
     batch1_rings: tuple
@@ -55,7 +55,7 @@ class TaskPlan:
         return bool(self.status & STATUS_USABLE)
 
     def to_bytes(self) -> bytes:
-        """打包为 16 字节数据段（文档「表 1-7」的字段顺序）。"""
+        """打包为 16 字节正文（文档「表 1-8.2」的字段顺序）。"""
         return bytes(self.batch1_colors + self.batch1_rings
                      + self.batch2_colors + self.batch2_rings_rough
                      + self.batch2_rings_staging + (self.status,))

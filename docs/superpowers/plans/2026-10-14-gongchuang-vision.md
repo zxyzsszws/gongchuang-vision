@@ -1,9 +1,10 @@
 # 工创赛视觉系统 Implementation Plan
 
-> **⚠ 本文是 2026-10-14 制定的 v1 实施计划，已完成并被 v2.0.0 取代。**
-> v1 的「三色环视觉校准 + 校准闭环」方案里，视觉负责规划与下发指令；v2.0.0 改为
-> 「视觉只测量、电控全规划」，参考物也从三色环改成三个同心圆靶。当前实现以
-> [`docs/protocol-v2.0.0.md`](../../protocol-v2.0.0.md) 与
+> **⚠ 本文是 2026-10-14 制定的 v1 实施计划，已完成，早已被取代。**
+> v1 的「三色环视觉校准 + 校准闭环」方案里，视觉负责规划与下发指令；现行版本
+> （V2.2.0）更进一步，改为「视觉只按需测量、电控全规划与全控制」，参考物也从三色环
+> 改成单个主同心圆。当前实现以
+> [`docs/protocol-v2.2.0.md`](../../protocol-v2.2.0.md) 与
 > [`README.md`](../../../README.md) 为准。下文保留原貌，仅作历史记录。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

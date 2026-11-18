@@ -1,6 +1,6 @@
 mode: sim
 camera:
-  main_index: 0          # 主摄（参考靶识别）
+  main_index: 0          # 主摄（主圆识别、转盘颜色）
   qr_index: 1            # 扫码相机（花雀广角）；与 main_index 相同则复用主摄
   qr_model_dir: ""       # WeChatQRCode 4 个模型所在目录；留空=OpenCV 内建缺省（辨识率低）
   width: 640
@@ -8,29 +8,27 @@ camera:
   fps: 30
 serial: {port: COM3, baudrate: 115200}
 
-# sim 模式 MockMcu 漂移模型与场景参数
-#   drift_mm_per_m: 里程每走 1m 累积的位置误差
-#   jitter_mm:      合成观测的高斯抖动（标准差，mm）
-#   leg_mm:         相邻区域之间的路程
-#   speed_mm_s:     行驶速度（决定每段路耗时，从而决定区域提示的节奏）
+# sim 模式的合成场景参数
+#   jitter_mm:            合成观测的高斯抖动（标准差，mm）
+#   turntable_omega01:    转盘角速度，0.1°/s（600 = 60°/s，即 6s 一圈）
+#   turntable_stop_after_s: 多少秒之后转盘停住；留空 = 一直转
 sim:
-  drift_mm_per_m: 8.0
-  drift_deg_per_m: 0.1
   jitter_mm: 0.3
-  leg_mm: 1200.0
-  speed_mm_s: 1200.0
-  turntable_omega01: 600    # 转盘角速度，0.1°/s（600 = 60°/s，即 6s 一圈）
+  turntable_omega01: 600
+  turntable_stop_after_s: 1.5
 
-# 时序参数（与 docs/protocol-v2.1.0.md 表 1-15 一一对应）
+# 时序参数（与 docs/protocol-v2.2.0.md 表 1-12 一一对应）
+#   frame_interval_ms:  等条件时多久取一帧（转盘停稳判定、扫码重试）
+#   scan_timeout_s:     一次扫码请求最长等多久，超时回「没准备好」
+#   turntable_timeout_s: 一次取料点颜色请求最长等多久（要盖住转盘转一圈的时间）
+#   max_bad_requests:   连续收到多少个不合法请求就进入安全停止
 timing:
-  ack_timeout_ms: 100       # 任务计划的应答超时（纯收帧，很快就能回）
-  exec_timeout_ms: 2000     # 解算帧等 done 的超时：done 在动作执行完才发
-  ack_retry: 3              # 重试上限
-  pose_interval_ms: 50      # 位姿上报周期 20Hz
-  turntable_interval_ms: 50 # 转盘上报周期 20Hz
-  scan_timeout_s: 15        # 扫码阶段的超时
+  frame_interval_ms: 20
+  scan_timeout_s: 3
+  turntable_timeout_s: 3
+  max_bad_requests: 5
 
-# 参考靶检测（同心圆聚类）
+# 主圆检测（同心圆聚类）
 #   search_radius: 半径搜索范围（像素），须覆盖最小圈到最外圈
 #   cluster_tol_px: 圆心聚类容差，多圈同心圆的圆心误差远小于此值
 #   min_rings: 至少几圈才认作一个靶（单个孤立的圆无法与杂散圆区分）
@@ -39,9 +37,8 @@ timing:
 #             这是区分「圆」与「方形/多边形」最有效的判据
 #   same_radius_ratio: 半径相对差低于此值视为同一圈的重复检出
 #   dedup_px: 环带内、外两条轮廓会被各检出一次，圆心距与半径差都小于此值时去重
-#   max_match_mm: 选靶时允许的「实测靶心 vs 按入场位姿预测位置」最大偏差（mm）。
-#             超过就认为画面里没有当前区域的靶，不发位姿。两组靶相距约 1.8m，
-#             而停位偏差通常几十毫米，500 很宽松；若现场停位偏差大可以调大
+#   ring_outer_mm: 主圆外圈的**实际直径**（mm），赛前实测。视觉用它反算 mm/px，
+#             这是对准精度的唯一尺度来源——量错了 d 就整体按比例偏
 #   threshold_block / threshold_c: 自适应阈值的块大小与常数
 target:
   search_radius: [10, 120]
@@ -51,9 +48,25 @@ target:
   min_fill: 0.85
   same_radius_ratio: 0.12
   dedup_px: 3.0
-  max_match_mm: 500.0
+  ring_outer_mm: 120.0
   threshold_block: 25
   threshold_c: 10
+
+# 转盘取料点（任务码 2）
+#   stop_strategy: motion = 连续几帧不动就算停稳
+#                  containment = 物料完全落进取料点的边界圆才算到位
+#   pick_point_mm: 取料点在画面里的位置（相对光轴，mm）。缺省 (0,0) = 画面中心
+#   material_radius_mm: 物料半径（mm），containment 策略用它定边界圆半径
+#   tol_mm / hold_s / pick_tol_mm: motion 策略的三个参数
+#   containment_margin: containment 策略里边界圆 = 物料半径 × 该系数
+turntable:
+  stop_strategy: motion
+  pick_point_mm: [0.0, 0.0]
+  material_radius_mm: 25.0
+  tol_mm: 8.0
+  hold_s: 0.25
+  pick_tol_mm: 25.0
+  containment_margin: 1.15
 
 # 物料颜色分割（转盘工位颜色识别用）
 color:
@@ -66,10 +79,11 @@ color:
     5: [[0,0,0],[180,255,80]]
     6: [[78,120,80],[99,255,255]]
 
-# 相机外参（像素 → 车身毫米）。live/replay 必填，缺则拒绝启动。
+# 相机外参（像素 → 车身毫米）。live/replay 建议提供：
+#   对准主圆要用它把像素偏移换成毫米（有主圆外圈实测时以实测为准）；
+#   转盘取料没有已知尺寸物，只能用它。
 # 生成：python tools/calibrate_camera.py --pair px_x,px_y,mm_x,mm_y --out config/camera_calib.yaml
 camera_calib_file: config/camera_calib.example.yaml
-field_file: config/field.example.yaml
 log_dir: logs
 # make_camera 工厂输入：replay 指向视频文件或图片目录；sim 供 ImageFolder 循环回放
 replay_path: tests/fixtures/imgs

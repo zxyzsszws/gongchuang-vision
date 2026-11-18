@@ -49,11 +49,12 @@ python3 -m src.main --mode sim --max-seconds 40
 - pytest 6.2.5：**85 passed**（仅 `pythonpath` 选项警告，已由 conftest 兜底）
 - `--mode sim`：`IDLE → … → DONE`，两次 `CAL_APPLIED`，退出码 0
 
-> **⚠ 待复测（协议 v2.1.0）**：串口帧格式仍为 `A5 | data_length(2B) | seq | CRC8 |
-> cmd_id(2B) | data | CRC16`，但命令集已按 `docs/protocol-v2.1.0.md` 换掉：
-> 取消心跳，新增 `0x0006` 臂状态与 `0x0008` 解算结果，`0x0007` 改为带结果字节的
-> 两字节应答（兼作 done）。状态机仍是 `SCANNING`/`SERVICE`/`SAFESTOP`。
-> 本地 Windows 全量测试 **281 passed**，`--mode sim` 可跑通扫码 → 测量 → 臂往返。
+> **⚠ 待复测（协议 v2.2.0）**：串口帧格式仍为 `A5 | data_length(2B) | seq | CRC8 |
+> cmd_id(2B) | data | CRC16`，但命令集已按 `docs/protocol-v2.2.0.md` 换成
+> **完全按需应答**：只剩 `0x0010`（请求）与 `0x0011`（结果）两条命令，用任务码
+> 区分扫码（1）、转盘取料点颜色（2）、对准主圆（3）。取消全部周期上报与心跳、
+> 取消 done、取消位姿纠正，`0x0005` 区域提示已删。状态机只剩 `SERVICE`/`SAFESTOP`。
+> 本地 Windows 全量测试 **243 passed**，`--mode sim` 可跑通扫码 → 问颜色 → 问对准。
 > 目标机当时不可用，**尚未在 Jetson 上复测**；下次可连时先跑
 > `python3 -m pytest -q` 与 `--mode sim` 确认，再谈串口联调。
 
@@ -66,11 +67,15 @@ python3 -m src.main --mode sim --max-seconds 40
    `detect.prototxt` / `detect.caffemodel` / `sr.prototxt` / `sr.caffemodel`，
    放到项目内（如 `models/wechat_qr/`），并设置 `camera.qr_model_dir`。
 2. **无相机设备**：`/dev/video*` 当前为空（未插相机），`live` 模式无法验证。
-3. **相机外参未标定**：`camera_calib_file` 指向的仍是示例文件。现场需按
-   README §6 用 `tools/calibrate_camera.py` 实测标定。
+3. **相机外参未标定**：`camera_calib_file` 指向的仍是示例文件（`config/camera_calib.example.yaml`）。
+   带示例外参启动不会报错，但任务 2（转盘颜色）与任务 3 的兜底尺度会按示例值算出
+   **大小错的**结果，比不带外参更难发现——不带外参时任务 2 至少会明确回
+   `ST_NOT_READY`，任务 3 则靠主圆外圈自量尺度、不受影响。
+   现场需按 README §6 用 `tools/calibrate_camera.py` 实测标定，并确认
+   `camera_calib_file` 指向新文件。
 4. **串口未接**：`serial.port` 默认 `COM3`（Windows 命名），Linux 下应为
-   `/dev/ttyTHS1` 或 `/dev/ttyUSB0` 之类，需按实际主控连接确认。**协议 v2.1.0 把
-   分工改为「视觉只测量、电控全权规划与控制」**，联调前须把
-   `docs/protocol-v2.1.0.md` 交电控组按新命令集实现，更早的 `AA 55 … xor 0D` 格式不再兼容。
+   `/dev/ttyTHS1` 或 `/dev/ttyUSB0` 之类，需按实际主控连接确认。**协议 v2.2.0 把
+   分工改为「视觉按需测量、电控全权规划与控制」**，联调前须把
+   `docs/protocol-v2.2.0.md` 交电控组按新命令集实现，更早的 `AA 55 … xor 0D` 格式不再兼容。
 5. **反向隧道未使用**：机器可直连 PyPI（已配 USTC 镜像），
    `ssh -R 7890:127.0.0.1:7897` 在本场景非必需。

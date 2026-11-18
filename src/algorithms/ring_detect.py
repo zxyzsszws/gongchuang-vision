@@ -1,17 +1,17 @@
-"""参考靶检测：把「多圈同心圆」拟合出一个公共圆心（纯函数层，像素域）。
+"""主圆检测：把「多圈同心圆」拟合出一个公共圆心（纯函数层，像素域）。
 
 ## 为什么用同心圆而不是单个圆
 
-参考靶由若干圈同心圆组成（类似射箭靶）。单个圆拟合只能得到一个圆心与该圆
-半径；而多圈同心圆共同约束同一个圆心——**圈数越多、半径跨度越大，圆心越准**。
-这正是位置精度能到亚像素级的物理来源。
+主圆由若干圈同心圆组成（类似射箭靶）。单个圆拟合只能得到一个圆心与该圆半径；
+而多圈同心圆共同约束同一个圆心——**圈数越多、半径跨度越大，圆心越准**。这正是
+对准精度能到亚像素级的物理来源。
 
 ## 为什么不用霍夫圆
 
-霍夫的 ``minDist`` 会抑制同心的多个圆：同心圆圆心完全相同，属于霍夫「重复
-检出」要压制的情形。实测在合成靶图上，霍夫把 3 个靶检成 55 个圆心互有偏移的
-圆，聚类后又被劈成十几簇。轮廓法没有这个矛盾：每一圈是一条独立闭合曲线，
-用最小外接圆拟合即得精确圆心与半径。
+霍夫的 ``minDist`` 会抑制同心的多个圆：同心圆圆心完全相同，属于霍夫「重复检出」
+要压制的情形。实测在合成靶图上，霍夫把 3 个靶检成 55 个圆心互有偏移的圆，聚类
+后又被劈成十几簇。轮廓法没有这个矛盾：每一圈是一条独立闭合曲线，用最小外接圆
+拟合即得精确圆心与半径。
 
 因此检测流程是：
 
@@ -20,10 +20,11 @@
 3. 把「圆心彼此足够接近」的圆聚成一簇，一簇即一个靶；簇心即靶心，
    簇内**不同半径的圈数**即「可见圈数」。
 
-## 为什么不用「按半径分档映射编号」
+## 为什么不再给三个靶排序
 
-旧实现靠半径带区分数字环 1/2/3。新方案里三个靶结构完全相同、编号只由排列
-顺序与靶心数字决定，半径不再承载编号信息，故不按半径分档。
+V2.1.0 靠三个共线靶解车身位姿，所以要把它们排成一条线的顺序。V2.2.0 只做
+「对准画面里最近的那个主圆」，没有多靶排序这回事了——排序代码随位姿解算一起
+下架，避免留下一段没人调用、却还在暗示「视觉会解位姿」的逻辑。
 """
 import math
 from dataclasses import dataclass
@@ -46,7 +47,7 @@ _DEFAULT_DEDUP_PX = 3.0
 
 @dataclass(frozen=True)
 class TargetObs:
-    """一个参考靶的像素域观测。"""
+    """一个同心圆靶的像素域观测。"""
 
     center: tuple        # 靶心像素坐标
     radius_px: float     # 最外圈半径
@@ -172,9 +173,8 @@ def cluster_concentric(circles, tol_px=_DEFAULT_CLUSTER_TOL_PX, min_rings=2,
 def detect_targets(img_bgr, cfg=None, search_radius=None):
     """一步完成「检出所有圆 + 聚成同心圆靶」。
 
-    cfg 可含 ``hough``（保留键，当前实现用轮廓法，不再读取）、
-    ``cluster_tol_px``、``min_rings``、``search_radius``、``min_circularity``。
-    ``search_radius`` 参数优先于 cfg 内的同名项。
+    cfg 可含 ``cluster_tol_px``、``min_rings``、``search_radius``、
+    ``min_circularity``。``search_radius`` 参数优先于 cfg 内的同名项。
     """
     cfg = cfg or {}
     circles = detect_circles(img_bgr, cfg, search_radius)
@@ -187,42 +187,20 @@ def detect_targets(img_bgr, cfg=None, search_radius=None):
     )
 
 
-def order_targets(obs, collinear_tol_deg=8.0):
-    """把检测到的靶排成「沿三点连线从一端到另一端」的顺序。
+def pick_main(obs, center_px, min_rings=2):
+    """从若干同心圆靶里挑出「主圆」：离画面中心最近的那个；没有就返回 None。
 
-    返回 ``(ordered, ok)``：``ordered`` 按连线方向的投影坐标升序；``ok`` 表示三点
-    是否确实近共线。三点不共线时**仍然返回排序结果**，由调用方决定是否采用——
-    检测层不隐藏信息，门控交给解算后的残差。
+    为什么按「离中心最近」挑而不是按圈数最多：电控已经先把臂伸到放置点上方，
+    主圆就在画面中心附近。按位置挑能挡住画面边上其他靶（甚至转盘上的圆）的干扰；
+    按圈数挑则在某圈恰好被反光切断时会把旁边的靶认成主圆，那比不认更糟。
 
-    为什么不用「左到右」：车正对靶排时三点在图像里是竖着排的，「左右」无意义；
-    用连线方向的投影排序对任意朝向都成立。排序方向做了规范化（+x 优先、同 x
-    取 +y），因此结果是确定的；但哪一端是 1 号仍然未知——那正是 180° 歧义，
-    必须由靶心数字或先验消解，不在本函数职责内。
+    距离相同时取圈数多的那个（圈数多说明圆心更可靠）。圈数低于 ``min_rings``
+    的簇根本不算靶，``detect_targets`` 已经滤掉。
     """
-    pts = list(obs)
-    if len(pts) < 3:
-        return pts, False
-
-    best, axis = -1.0, (1.0, 0.0)
-    for i in range(len(pts)):
-        for j in range(i + 1, len(pts)):
-            dx = pts[j].center[0] - pts[i].center[0]
-            dy = pts[j].center[1] - pts[i].center[1]
-            d = math.hypot(dx, dy)
-            if d > best:
-                best, axis = d, (dx / d, dy / d) if d > 0 else (1.0, 0.0)
-
-    if axis[0] < 0 or (axis[0] == 0 and axis[1] < 0):
-        axis = (-axis[0], -axis[1])
-
-    ordered = sorted(pts, key=lambda t: t.center[0] * axis[0] + t.center[1] * axis[1])
-
-    # 共线判定：中间点到首尾连线的垂距，换算成角度
-    a, b, m = ordered[0].center, ordered[-1].center, ordered[1].center
-    ab = math.hypot(b[0] - a[0], b[1] - a[1])
-    if ab < 1e-9:
-        return ordered, False
-    cross = abs((b[0] - a[0]) * (m[1] - a[1]) - (b[1] - a[1]) * (m[0] - a[0]))
-    perp = cross / ab
-    ang = math.degrees(math.atan2(perp, max(1e-9, ab / 2.0)))
-    return ordered, ang <= collinear_tol_deg
+    cand = [t for t in obs if t.ring_count >= min_rings]
+    if not cand:
+        return None
+    cx, cy = float(center_px[0]), float(center_px[1])
+    return min(cand, key=lambda t: (math.hypot(t.center[0] - cx,
+                                               t.center[1] - cy),
+                                    -t.ring_count))
