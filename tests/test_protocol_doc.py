@@ -362,3 +362,45 @@ def test_frozen_items_list_is_not_empty(doc_text):
     sec = doc_text.split("附录四：待冻结事项", 1)[1]
     numbered = re.findall(r"^\d+\. ", sec, re.M)
     assert len(numbered) >= 8, f"待冻结事项只有 {len(numbered)} 条"
+
+
+# ---------- 7. 附录一的 CRC 代码必须真的能算出正确值 ----------
+
+def test_appendix_crc_code_matches_implementation(doc_text):
+    """附录一的 C 代码是电控直接抄去用的，必须与 `crc.py` 逐位一致。
+
+    文档里给的是生成式而不是 256 项常量，好处是可审查；坏处是多项式常量写错
+    也「看起来像对的」。这里把代码原样抽出来、用纯 Python 照着跑一遍，核对
+    三件事：256 项查表值、CRC8 对帧头的结果、CRC16 的标准 check 值。
+    """
+    from src.core.crc import CRC8_TAB, CRC16_TAB, crc8, crc16
+
+    sec = doc_text.split("# 附录一：CRC 校验", 1)[1]
+    code = re.search(r"```c\n(.*?)```", sec, re.S).group(1)
+
+    # 多项式常量必须与实现相同
+    assert "0x8C" in code and "0x8408" in code
+    assert "0xFF" in code and "0xFFFF" in code
+
+    # 照文档里的循环逻辑重算两张表
+    tab8 = []
+    for i in range(256):
+        c = i
+        for _ in range(8):
+            c = ((c >> 1) ^ 0x8C) if (c & 1) else (c >> 1)
+        tab8.append(c & 0xFF)
+    tab16 = []
+    for i in range(256):
+        c = i
+        for _ in range(8):
+            c = ((c >> 1) ^ 0x8408) if (c & 1) else (c >> 1)
+        tab16.append(c & 0xFFFF)
+
+    assert tuple(tab8) == CRC8_TAB
+    assert tuple(tab16) == CRC16_TAB
+
+    # 组帧顺序也写在附录一里，逐项抽查
+    assert "crc8_tab[(uint8_t)(c ^ *p++)]" in code
+    assert "(c >> 8) ^ crc16_tab[(uint8_t)(c ^ *p++)]" in code
+    assert crc8(b"\xa5\x03\x00\x0a") == 0x59
+    assert crc16(b"123456789") == 0x6F91

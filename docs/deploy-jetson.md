@@ -54,7 +54,7 @@ python3 -m src.main --mode sim --max-seconds 40
 > **完全按需应答**：只剩 `0x0010`（请求）与 `0x0011`（结果）两条命令，用任务码
 > 区分扫码（1）、转盘取料点颜色（2）、对准主圆（3）。取消全部周期上报与心跳、
 > 取消 done、取消位姿纠正，`0x0005` 区域提示已删。状态机只剩 `SERVICE`/`SAFESTOP`。
-> 本地 Windows 全量测试 **251 passed**，`--mode sim` 可跑通扫码 → 问颜色 → 问对准。
+> 本地 Windows 全量测试 **252 passed**，`--mode sim` 可跑通扫码 → 问颜色 → 问对准。
 > 目标机当时不可用，**尚未在 Jetson 上复测**；下次可连时先跑
 > `python3 -m pytest -q` 与 `--mode sim` 确认，再谈串口联调。
 
