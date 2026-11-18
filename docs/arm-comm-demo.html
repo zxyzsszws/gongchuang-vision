@@ -1,0 +1,1255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>机械臂解算 + 串口时序 · 电控 ⇄ 视觉（协议 V2.1.0）</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{display:flex;height:100vh;overflow:hidden;background:#eef1f5;color:#1b2430;
+       font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .stage{position:relative;flex:1 1 auto;min-width:0;background:#fbfcfe}
+  #top{display:block;width:100%;height:46%}
+  #side{display:block;width:100%;height:18%;border-top:1px solid #e6ebf1}
+  .seqwrap{position:relative;width:100%;height:36%;border-top:1px solid #e6ebf1;background:#fff}
+  #seq{display:block;width:100%;height:100%}
+  .panel{flex:0 0 404px;background:#fff;border-left:1px solid #dfe5ec;
+         padding:14px 18px 40px;overflow-y:auto}
+  h1{font-size:15.5px;margin:0 0 4px}
+  .sub{margin:0 0 14px;font-size:12px;line-height:1.6;color:#6b7a8c}
+  h2{font-size:11.5px;margin:16px 0 8px;color:#6b7a8c;font-weight:600;
+     letter-spacing:.7px;text-transform:uppercase}
+  .ctl{margin-bottom:10px}
+  .lab{display:flex;justify-content:space-between;align-items:baseline;
+       font-size:12px;color:#4a5768;margin-bottom:4px}
+  .lab b{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+         font-size:12.8px;color:#1b2430;font-weight:600}
+  input[type=range]{width:100%;-webkit-appearance:none;appearance:none;height:18px;
+    background:transparent;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:#dbe3ec}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;
+    border-radius:50%;background:#2f6fb5;margin-top:-4.5px;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+  input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:#dbe3ec}
+  input[type=range]::-moz-range-thumb{width:13px;height:13px;border:0;border-radius:50%;background:#2f6fb5}
+  select{width:100%;padding:6px 8px;border-radius:6px;border:1px solid #cfd9e5;
+         background:#fff;color:#33414f;font-size:12px;font-family:inherit;cursor:pointer}
+  .btns{display:flex;gap:8px;margin-top:6px}
+  button{flex:1;padding:9px 8px;border-radius:7px;border:1px solid #cfd9e5;
+         background:#fff;color:#33414f;font-size:12.5px;font-family:inherit;cursor:pointer}
+  button:hover{background:#f4f7fa}
+  button.primary{background:#2f6fb5;border-color:#2f6fb5;color:#fff;font-weight:600}
+  button.primary:hover{background:#2a639f}
+  .msg{margin-top:10px;font-size:11.8px;line-height:1.6;color:#4a5768;
+       background:#f5f8fb;border-left:3px solid #cfd9e5;padding:7px 9px;border-radius:0 5px 5px 0}
+  .msg.warn{background:#fff6e8;border-left-color:#e8912b;color:#8a5a12}
+  .msg.bad{background:#fdf0f0;border-left-color:#d94a4a;color:#a02b2b}
+  .msg.ok{background:#f1f8f2;border-left-color:#3f9a55;color:#2b6b3b}
+  .eq{display:flex;gap:8px;align-items:baseline;padding:6px 0;border-bottom:1px dashed #eef2f6}
+  .eq:last-child{border-bottom:0}
+  .eq i{flex:0 0 20px;font-style:italic;font-family:Georgia,serif;font-size:14px;
+        color:#2f6fb5;text-align:right}
+  .eq code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+           font-size:12px;color:#33414f;white-space:pre-wrap;line-height:1.5}
+  .eq code b{color:#1b2430}
+  .note{font-size:11.4px;line-height:1.75;color:#78879a;margin:8px 0 0}
+  .note code{font-family:ui-monospace,Consolas,monospace;background:#f3f6fa;
+             padding:1px 3px;border-radius:3px;font-size:10.8px}
+  .frames{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+          font-size:11px;line-height:1.85;color:#33414f;
+          background:#f7f9fc;border:1px solid #e6ebf1;border-radius:6px;
+          padding:8px 10px;white-space:pre;overflow-x:auto}
+  .frames em{color:#8b98a8;font-style:normal}
+  .q{margin:0;padding:0;list-style:none;font-size:11.5px;line-height:1.7;color:#4a5768}
+  .q li{padding:7px 0 7px 0;border-bottom:1px dashed #eef2f6}
+  .q li:last-child{border-bottom:0}
+  .q b{color:#1b2430;font-weight:600}
+  .q .cur{color:#2f6fb5}
+  .hud{position:absolute;left:14px;top:12px;display:flex;gap:16px;
+       background:rgba(255,255,255,.9);backdrop-filter:blur(6px);
+       border:1px solid #e2e8ef;border-radius:8px;padding:8px 13px;
+       font-size:11px;color:#6b7a8c;pointer-events:none}
+  .hud div{display:flex;flex-direction:column;gap:2px}
+  .hud b{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+         font-size:13px;color:#1b2430;font-weight:600}
+  .legend{position:absolute;left:14px;top:84px;font-size:11px;color:#78879a;
+          line-height:1.85;pointer-events:none}
+  .legend i{display:inline-block;width:13px;height:3px;border-radius:2px;
+            margin-right:6px;vertical-align:middle}
+  .axes{position:absolute;right:14px;top:12px;font-size:10.8px;color:#9aa8b8;
+        line-height:1.7;text-align:right;pointer-events:none}
+  @media (max-width:980px){
+    body{flex-direction:column}
+    .panel{flex:0 0 auto;width:100%;border-left:0;border-top:1px solid #dfe5ec;max-height:46vh}
+    .stage{flex:0 0 54vh}
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <canvas id="top"></canvas>
+  <canvas id="side"></canvas>
+  <div class="seqwrap"><canvas id="seq"></canvas></div>
+
+  <div class="hud">
+    <div><span>车位移 d</span><b id="hudD">—</b></div>
+    <div><span>臂角 α</span><b id="hudT">—</b></div>
+    <div><span>相机到目标</span><b id="hudR">—</b></div>
+  </div>
+  <div class="legend">
+    <div><i style="background:#2b3d52"></i>臂当前姿态（电控报来的 l, α<sub>当前</sub>）</div>
+    <div><i style="background:#3f9a55"></i>解出的终态（车移 d、臂转到 α<sub>目标</sub>）</div>
+    <div><i style="background:#9db9d8"></i>可达圆弧：目标必须在上面</div>
+  </div>
+  <div class="axes">
+    x 向前（画面↓）　y 向车身右侧（画面→）<br>
+    电机坐标系原点在车身右侧边中点
+  </div>
+</div>
+
+<aside class="panel">
+  <h1>机械臂解算 · 电控 ⇄ 视觉</h1>
+  <p class="sub">电控先把相机开到目标附近，用 <code>0x0006</code> 报来臂的 <b>l, h, α<sub>当前</sub></b>；视觉测一帧，用 <code>0x0008</code> 回 <b>d</b> 与 <b>α<sub>目标</sub></b>，电控执行完再回 <code>0x0007</code> 的 done。<br>
+  协议 V2.1.0：<b>没有心跳</b>，只有任务计划与臂解算这两处需要应答。</p>
+
+  <section>
+    <div class="ctl">
+      <div class="lab"><span>① 臂水平长度 l（电控报来）</span><b id="ol">600</b></div>
+      <input type="range" id="rl" min="350" max="800" step="5" value="600">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>② 臂高度 h（电控报来）</span><b id="oh">260</b></div>
+      <input type="range" id="rh" min="60" max="520" step="5" value="260">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>③ 当前臂角 α（电控报来）</span><b id="oa">20°</b></div>
+      <input type="range" id="ra" min="-80" max="100" step="1" value="20">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>目标 x（向前，视觉量出）</span><b id="ox">700</b></div>
+      <input type="range" id="rx" min="-150" max="1000" step="5" value="700">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>目标 y（向右，视觉量出）</span><b id="oy">480</b></div>
+      <input type="range" id="ry" min="-250" max="800" step="5" value="480">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>目标高度 z（仅侧视图显示，不回给电控）</span><b id="oz">120</b></div>
+      <input type="range" id="rz" min="0" max="440" step="5" value="120">
+    </div>
+
+    <div class="ctl">
+      <div class="lab"><span>丢包场景（验证重发）</span><b id="oloss">不丢包</b></div>
+      <select id="loss">
+        <option value="none">不丢包</option>
+        <option value="cmd">视觉的解算帧丢了 1 次</option>
+        <option value="done">done 丢了 1 次</option>
+        <option value="both">两者各丢 1 次</option>
+        <option value="dead">done 一直丢（重发 3 次后安全停止）</option>
+      </select>
+    </div>
+
+    <div class="btns">
+      <button id="run" class="primary">开始通信</button>
+      <button id="reset">重置</button>
+    </div>
+    <div id="msg" class="msg">点“开始通信”，看一次完整问答。</div>
+  </section>
+
+  <h2>解算</h2>
+  <div class="eq"><i>α</i><code id="eqA">—</code></div>
+  <div class="eq"><i>d</i><code id="eqD">—</code></div>
+
+  <h2>应答与重发规则（V2.1.0 定稿）</h2>
+  <p class="note" style="margin-top:0">
+  只有两处往返需要应答，都不是额外的 ack 帧：
+  </p>
+  <ol class="q">
+    <li><b>0x0006 的应答就是 0x0008。</b>电控发出臂状态后等解算帧；
+        超时没等到，就认为视觉没收到，<b>重发臂状态（seq 不变）</b>。
+        视觉收到同一个 seq 时，<b>原样重发上一帧 0x0008</b>，不重新解算。</li>
+    <li><b>done 就是 0x0007 带结果字节。</b>视觉发出 0x0008 后等 done；
+        超时没等到，就认为电控没收到，<b>重发解算帧（seq 不变）</b>。
+        电控按 <code>echo_seq</code> 认出这帧执行过了，只补一次 done。</li>
+    <li><b>超时取值不同。</b>纯收帧的应答超时是 100ms；等 done 是 2000ms，
+        因为 done 在动作<b>执行完</b>才发，用 100ms 判会一直误判、疯狂重发。</li>
+    <li><b>重发有上限。</b>两边各自最多重发 3 次；第 3 次仍失败就安全停止，
+        不继续动作，也不假装成功。</li>
+    <li><b>电控按 <code>echo_seq</code> 去重是硬性要求。</b>视觉重发的解算帧 seq 不变，
+        电控若会计数，车会沿同一个 <code>shift_x</code> 走两遍——这类错误不报错，
+        只表现为位置错。</li>
+  </ol>
+  <p class="note">
+  <b>本版本没有心跳。</b>周期测量帧（位姿、转盘，各 20Hz）本身就是链路活跃的证据；
+  而电控是事件驱动的，停着作业时可能十几秒不发一帧，把静默当断链只能得到误报。
+  链路死掉一定会在上面两处往返之一暴露出来。
+  </p>
+  <p class="note">
+  左侧「丢包场景」可以分别验证：解算帧丢、done 丢、两者都丢、done 一直丢。
+  打叉的连线就是丢掉的帧，同一方向上后面那条就是重发。
+  </p>
+
+  <h2>实际会发的字节（按当前数值编）</h2>
+  <div class="frames" id="frames">—</div>
+
+  <h2>本版本确定的约定</h2>
+  <ol class="q">
+    <li><b>坐标系</b>：电机坐标系原点在<b>车身右侧边的中点</b>（臂的转轴），
+        +x 沿车头方向，+y 指向车身外侧，车身本体落在 y &lt; 0 一侧。<br>
+        <span class="cur">这条已写进协议附录二第三节。</span></li>
+    <li><b>l 是水平伸出长度</b>，比赛中<b>固定死</b>，不作为一个可调自由度；
+        h 是相机离地高度，用于把像素折算成毫米。</li>
+    <li><b>α 从 +x 量起、向 +y 为正</b>，是<b>绝对角</b>，不是相对当前 yaw 的增量。<br>
+        <span class="cur">所以 0x0008 直接给出最终该转到的角度，电控自己算差值。</span></li>
+    <li><b>d 是相对当前车身位置的位移</b>，正为前进、负为后退，单位 mm。<br>
+        <span class="cur">视觉每轮从零算，不做跨帧累积；电控执行完不必回报「我现在在哪」。</span></li>
+    <li><b>执行顺序：先挪车 <code>shift_x</code>，再转臂 <code>arm_yaw</code>。</b>
+        反过来臂会先摆到目标方向，挪车时扫过更大范围。</li>
+    <li><b>电控在等解算时必须静止。</b>从发出 0x0006 到收到 done 之前，底盘不动、
+        臂不转、升降不调——否则解出的 d 对应一个已经不存在的姿态。</li>
+    <li><b>够不着就报够不着。</b>|y| &gt; l 时状态字节 bit0~1 = 1，不钳位：
+        钳位会给出一个「看起来能到、实际差一截」的答案，电控抓空却不报错。</li>
+    <li><b>命令码</b>：0x0006 臂状态（电控→视觉，7B）、0x0008 解算结果
+        （视觉→电控，10B）、done 复用 0x0007（2B：<code>ack_seq</code> + 结果字节）。</li>
+  </ol>
+</aside>
+
+<script>
+(function () {
+  'use strict';
+
+  // ======================================================================
+  //  坐标约定（与手绘图一致）
+  //    +x 车头方向  → 画面向下
+  //    +y 车身右侧  → 画面向右
+  //    +z 向上      → 指向纸外
+  //  电机坐标系原点：车身右侧边的中点，也就是臂的转轴。
+  //  车身因此落在 y∈[-width, 0] 一侧。
+  // ======================================================================
+  const CAR = { len: 800, width: 620 };
+
+  const S = {
+    l: 600, h: 260, alpha: 20,          // 电控报来的三个量
+    xt: 700, yt: 480, zt: 120,          // 视觉量出来的目标
+    carX: 0, theta: 0,                  // 动画状态
+    plan: null,                         // 解算结果
+    loss: 'none',                       // 丢包场景
+    elapsed: 0,                         // 当前动画时间（ms）
+    revealPlan: false
+  };
+
+  // ---------------------------------------------------------------- 几何
+  let W = 880, H = 420, scale = 0.34;
+  let VIEW_CX = 300, VIEW_CY = 100;
+  let ox = 440, oy = 210;
+
+  function P(wx, wy) { return [ox + (wy - VIEW_CY) * scale, oy + (wx - VIEW_CX) * scale]; }
+  function L(mm) { return mm * scale; }
+
+  const cvs = document.getElementById('top');
+  const ctx = cvs.getContext('2d');
+  const cvsSide = document.getElementById('side');
+  const sctx = cvsSide.getContext('2d');
+  const cvsSeq = document.getElementById('seq');
+  const qctx = cvsSeq.getContext('2d');
+
+  function prep(canvas, gc) {
+    const r = canvas.getBoundingClientRect();
+    const w = Math.max(200, r.width), h = Math.max(80, r.height);
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
+    }
+    gc.setTransform(dpr, 0, 0, dpr, 0, 0);
+    gc.clearRect(0, 0, w, h);
+    return { w: w, h: h, g: gc };
+  }
+
+  // ---------------------------------------------------------------- 解算
+  //
+  // 与 src/algorithms/arm.py 完全一致（协议 V2.1.0 定稿公式）：
+  //   α = asin(y / l)      横向只能靠臂转出来
+  //   d = x − l·cos α      前后靠车沿自身 x 挪
+  // l 是臂的水平伸出长度，比赛中固定死；相机就装在臂末端。
+  // |y| > l 时 asin 的宗量超出 ±1，横向够不着，只能挪车——这时报无解，不钳位。
+  function solve() {
+    const l = S.l;
+    const r2d = 180 / Math.PI;
+
+    if (!(l > 1)) {
+      return { ok: false, reason: '臂长 l 太小，解不出来。' };
+    }
+    if (Math.abs(S.yt) > l) {
+      return {
+        ok: false,
+        reason: '够不着：|y| = ' + Math.abs(S.yt).toFixed(0) +
+                ' mm 超过臂长 l = ' + l.toFixed(0) +
+                ' mm。横向只能靠转臂，转多少度都补不回来，必须让电控把车挪一点再问一次。'
+      };
+    }
+
+    const alpha = Math.asin(Math.max(-1, Math.min(1, S.yt / l)));
+    const alphaDeg = alpha * r2d;
+    const d = S.xt - l * Math.cos(alpha);
+    const sweeps = Math.abs(alphaDeg) > 90.0;      // 主值不会超 90°，保留判据
+
+    return { ok: true, alpha: alpha, alphaDeg: alphaDeg, d: d, sweeps: sweeps };
+  }
+
+  /** 臂末端在电机坐标系下的位置；车挪了 carX 就是相对转轴的位置。 */
+  function camPos(alpha) {
+    return { x: S.l * Math.cos(alpha), y: S.l * Math.sin(alpha) };
+  }
+
+  // ---------------------------------------------------------------- 视野
+  function updateView() {
+    const d = (S.plan && S.plan.ok) ? S.plan.d : 0;
+    const R = S.l;
+    const xs = [0, S.xt, d,
+                -CAR.len / 2, CAR.len / 2,
+                d - CAR.len / 2, d + CAR.len / 2,
+                d - R, d + R];
+    const ys = [0, S.yt, -CAR.width, R, -R];
+    const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    const y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    VIEW_CX = (x0 + x1) / 2;
+    VIEW_CY = (y0 + y1) / 2;
+    const spanX = (x1 - x0) + 200;   // → 画面竖向
+    const spanY = (y1 - y0) + 160;   // → 画面横向
+    scale = Math.min(W / spanY, H / spanX);
+  }
+
+  // ---------------------------------------------------------------- 基础绘制
+  function rr(g, x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  }
+  function line(g, x1, y1, x2, y2) {
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  }
+  function worldRect(g, x0, y0, x1, y1, rad) {
+    const p = P(Math.min(x0, x1), Math.min(y0, y1));
+    const q = P(Math.max(x0, x1), Math.max(y0, y1));
+    rr(g, p[0], p[1], q[0] - p[0], q[1] - p[1], rad || 0);
+  }
+  function arrow(g, x1, y1, x2, y2, color, width, head) {
+    g.save();
+    g.strokeStyle = color; g.fillStyle = color; g.lineWidth = width || 2;
+    line(g, x1, y1, x2, y2);
+    const a = Math.atan2(y2 - y1, x2 - x1), s = head || 8;
+    g.beginPath();
+    g.moveTo(x2, y2);
+    g.lineTo(x2 - s * Math.cos(a - 0.42), y2 - s * Math.sin(a - 0.42));
+    g.lineTo(x2 - s * Math.cos(a + 0.42), y2 - s * Math.sin(a + 0.42));
+    g.closePath(); g.fill();
+    g.restore();
+  }
+  function tag(g, str, x, y, color, size, align, maxW) {
+    size = size || 11;
+    g.font = size + 'px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+    g.textAlign = align || 'left';
+    g.textBaseline = 'alphabetic';
+    const tw = g.measureText(str).width;
+    let left = align === 'right' ? x - tw : (align === 'center' ? x - tw / 2 : x);
+    const limit = (maxW === undefined ? W : maxW);
+    if (left + tw > limit - 5) left = limit - 5 - tw;
+    if (left < 5) left = 5;
+    const dx = align === 'right' ? left + tw : (align === 'center' ? left + tw / 2 : left);
+    g.fillStyle = 'rgba(255,255,255,.9)';
+    g.fillRect(left - 3, y - size + 1, tw + 6, size + 5);
+    g.fillStyle = color || '#5a6879';
+    g.fillText(str, dx, y);
+  }
+
+  // ---------------------------------------------------------------- 俯视图
+  function drawTop() {
+    const m = prep(cvs, ctx);
+    W = m.w; H = m.h;
+    ox = W / 2; oy = H / 2;
+    updateView();
+    drawGrid();
+
+    const sol = S.plan;
+    const reveal = !!(sol && sol.ok && S.revealPlan);
+    drawReachArc(sol);
+    // 车真的会挪位置：先把出发位置淡淡画一份，再画当前/动画中的位置
+    if (reveal && Math.abs(sol.d) > 4) drawCar(0, 1);
+    drawCar(S.carX, 0);
+    drawTarget();
+    drawCurrentArm();
+    if (reveal) drawPlanArm(sol);
+    drawScaleBar();
+  }
+
+  function drawGrid() {
+    const step = 100;
+    const xLo = VIEW_CX - (H / 2) / scale, xHi = VIEW_CX + (H / 2) / scale;
+    const yLo = VIEW_CY - (W / 2) / scale, yHi = VIEW_CY + (W / 2) / scale;
+    ctx.lineWidth = 1;
+    for (let gx = Math.ceil(xLo / step) * step; gx <= xHi; gx += step) {
+      const major = gx % 500 === 0;
+      ctx.strokeStyle = major ? '#e3e9f1' : '#f3f6f9';
+      const p = P(gx, yLo);
+      line(ctx, 0, Math.round(p[1]) + .5, W, Math.round(p[1]) + .5);
+      if (major) tag(ctx, gx + '', W - 6, Math.round(p[1]) - 4, '#b9c4d1', 9.5, 'right');
+    }
+    for (let gy = Math.ceil(yLo / step) * step; gy <= yHi; gy += step) {
+      const major = gy % 500 === 0;
+      ctx.strokeStyle = major ? '#e3e9f1' : '#f3f6f9';
+      const p = P(xLo, gy);
+      line(ctx, Math.round(p[0]) + .5, 0, Math.round(p[0]) + .5, H);
+      if (major && gy !== 0) tag(ctx, gy + '', Math.round(p[0]) + 4, H - 6, '#b9c4d1', 9.5, 'left');
+    }
+    ctx.strokeStyle = '#dbe2ea'; ctx.lineWidth = 1.2;
+    const a = P(xLo, 0), b = P(xHi, 0);
+    line(ctx, a[0], a[1], b[0], b[1]);
+  }
+
+  /** 可达圆弧：圆心是「车挪 d 之后」的转轴，半径恒为臂长 l，目标必须落在上面。 */
+  function drawReachArc(sol) {
+    const R = S.l;
+    const center = (sol && sol.ok && S.revealPlan) ? sol.d : 0;
+    const p = P(center, 0);
+    ctx.save();
+    ctx.setLineDash([6, 7]);
+    ctx.strokeStyle = '#9db9d8';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], L(R), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    const lp = P(center - R * 0.72, R * 0.62);
+    tag(ctx, 'l = ' + R.toFixed(0), lp[0], lp[1], '#8aa7c6', 10, 'center');
+  }
+
+  function drawCar(carX, ghost) {
+    const halfL = CAR.len / 2;
+    const WHEEL = { halfLen: 60, overhang: 34, thick: 38 };
+    ctx.save();
+    if (ghost) ctx.globalAlpha = 0.34;
+    ctx.fillStyle = '#8d99a8';
+    [carX - 210, carX + 210].forEach(function (wx) {
+      worldRect(ctx, wx - WHEEL.halfLen, 0,
+                wx + WHEEL.halfLen, WHEEL.thick, L(6)); ctx.fill();
+      worldRect(ctx, wx - WHEEL.halfLen, -CAR.width - WHEEL.thick,
+                wx + WHEEL.halfLen, -CAR.width, L(6)); ctx.fill();
+    });
+
+    const a = P(carX - halfL, 0), b = P(carX + halfL, -CAR.width);
+    const x1 = Math.min(a[0], b[0]), x2 = Math.max(a[0], b[0]);
+    const y1 = Math.min(a[1], b[1]), y2 = Math.max(a[1], b[1]);
+    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+    grad.addColorStop(0, '#e8eff7');
+    grad.addColorStop(1, '#d3dfec');
+    ctx.fillStyle = grad;
+    ctx.strokeStyle = '#a9b9cb';
+    ctx.lineWidth = 1.5;
+    rr(ctx, x1, y1, x2 - x1, y2 - y1, L(24));
+    ctx.fill(); ctx.stroke();
+
+    ctx.strokeStyle = '#9db0c4'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    line(ctx, x1 + L(26), y2 - 4, x2 - L(26), y2 - 4);
+
+    ctx.fillStyle = '#93a2b3';
+    ctx.font = '12.5px "Segoe UI","PingFang SC",sans-serif';
+    ctx.textAlign = 'center';
+    if (!ghost) ctx.fillText('车身', (x1 + x2) / 2, (y1 + y2) / 2 + 5);
+    ctx.restore();
+  }
+
+  function drawTarget() {
+    const t = P(S.xt, S.yt);
+    ctx.save();
+    ctx.setLineDash([3, 4]);
+    ctx.strokeStyle = '#dbe3ec';
+    ctx.lineWidth = 1;
+    const o = P(0, 0);
+    line(ctx, o[0], o[1], t[0], o[1]);
+    line(ctx, t[0], o[1], t[0], t[1]);
+    ctx.restore();
+
+    ctx.beginPath(); ctx.arc(t[0], t[1], 12, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(217,74,74,.13)'; ctx.fill();
+    ctx.beginPath(); ctx.arc(t[0], t[1], 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#d94a4a'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.strokeStyle = 'rgba(217,74,74,.45)'; ctx.lineWidth = 1;
+    line(ctx, t[0] - 16, t[1], t[0] + 16, t[1]);
+    line(ctx, t[0], t[1] - 16, t[0], t[1] + 16);
+    tag(ctx, '目标', t[0] + 12, t[1] - 9, '#c03a3a', 11);
+  }
+
+  /**
+   * 臂的**当前实际姿态**：角度取动画中的 S.theta（初始等于电控报来的 α<sub>当前</sub>，
+   * 执行阶段随动画转到 α<sub>目标</sub>），转轴跟着车一起沿 x 移动。
+   */
+  function drawCurrentArm() {
+    const ang = S.theta;                       // 弧度，实时
+    const o = P(S.carX, 0);
+    const tipW = { x: S.carX + S.l * Math.cos(ang), y: S.l * Math.sin(ang) };
+    const tip = P(tipW.x, tipW.y);
+    const camW = camPos(ang);
+    const cam = P(S.carX + camW.x, camW.y);
+
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#2b3d52'; ctx.lineWidth = 10;
+    line(ctx, o[0], o[1], tip[0], tip[1]);
+    ctx.strokeStyle = '#93a5b9'; ctx.lineWidth = 5;
+    line(ctx, o[0], o[1], tip[0], tip[1]);
+
+    // 转轴
+    ctx.beginPath(); ctx.arc(o[0], o[1], 7, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.strokeStyle = '#2b3d52'; ctx.lineWidth = 2.2; ctx.stroke();
+
+    // 相机
+    ctx.save();
+    ctx.translate(cam[0], cam[1]);
+    ctx.rotate(Math.atan2(cam[1] - o[1], cam[0] - o[0]));
+    ctx.beginPath(); ctx.rect(-8, -9, 20, 18);
+    ctx.fillStyle = '#2b3d52'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.4; ctx.stroke();
+    ctx.beginPath(); ctx.arc(5, 0, 3.2, 0, Math.PI * 2);
+    ctx.fillStyle = '#8fd0ff'; ctx.fill();
+    ctx.restore();
+
+    // 视线
+    const t = P(S.xt, S.yt);
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = 'rgba(47,111,181,.5)';
+    ctx.lineWidth = 1.3;
+    line(ctx, cam[0], cam[1], t[0], t[1]);
+    ctx.restore();
+
+    // 当前角弧（随执行实时变化）：半径按像素给，免得缩放后弧变成一小圈。
+    // 只标字母；执行结束后当前角与目标角重合，就不再重复标 α。
+    const rA = 30 / scale;
+    worldArc(S.carX, 0, rA, 0, ang, 'rgba(43,61,82,.38)', 1.3);
+    const coincides = S.plan && S.plan.ok && S.revealPlan &&
+                      Math.abs(ang - S.plan.alpha) < 0.01;
+    if (!coincides) {
+      const midA = ang / 2;
+      const lap = P(S.carX + (rA + 13 / scale) * Math.cos(midA),
+                    (rA + 13 / scale) * Math.sin(midA));
+      tag(ctx, 'α', lap[0], lap[1], '#5d6f84', 11, 'center');
+    }
+  }
+
+  /** 解出来的终态：车在 d、臂在 α<sub>目标</sub>。 */
+  function drawPlanArm(sol) {
+    const o = P(sol.d, 0);
+    const camW = camPos(sol.alpha);
+    const cam = P(sol.d + camW.x, camW.y);
+    const tipW = { x: sol.d + S.l * Math.cos(sol.alpha), y: S.l * Math.sin(sol.alpha) };
+    const tip = P(tipW.x, tipW.y);
+
+    // 车会挪到哪儿：沿 x 的尺寸线，放在车身右侧（y>0）免得压到车身
+    const cur = P(0, 0), neo = P(sol.d, 0);
+    if (Math.abs(sol.d) > 4) {
+      const dimY = 210;
+      const a = P(0, dimY), b = P(sol.d, dimY);
+      ctx.save();
+      ctx.setLineDash([3, 4]); ctx.strokeStyle = 'rgba(232,145,43,.45)'; ctx.lineWidth = 1;
+      line(ctx, cur[0], cur[1], a[0], a[1]);
+      line(ctx, neo[0], neo[1], b[0], b[1]);
+      ctx.restore();
+      arrow(ctx, a[0], a[1], b[0], b[1], '#e8912b', 2);
+      arrow(ctx, b[0], b[1], a[0], a[1], '#e8912b', 2);
+      tag(ctx, 'd = ' + sol.d.toFixed(1) + ' mm',
+          (a[0] + b[0]) / 2, (a[1] + b[1]) / 2 - 8, '#b06f18', 11.5, 'center');
+    }
+
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(63,154,85,.30)'; ctx.lineWidth = 11;
+    line(ctx, o[0], o[1], tip[0], tip[1]);
+    ctx.strokeStyle = '#3f9a55'; ctx.lineWidth = 5;
+    line(ctx, o[0], o[1], tip[0], tip[1]);
+
+    // 终态转轴
+    ctx.beginPath(); ctx.arc(o[0], o[1], 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.strokeStyle = '#3f9a55'; ctx.lineWidth = 2; ctx.stroke();
+
+    // 终态相机落在目标上
+    ctx.beginPath(); ctx.arc(cam[0], cam[1], 7, 0, Math.PI * 2);
+    ctx.strokeStyle = '#3f9a55'; ctx.lineWidth = 2; ctx.stroke();
+
+    // 目标角弧比当前角弧稍大一圈，两者同心时也不完全重叠
+    const rT = 42 / scale;
+    worldArc(sol.d, 0, rT, 0, sol.alpha, 'rgba(63,154,85,.8)', 1.6);
+    const mid = sol.alpha / 2;
+    const lp = P(sol.d + (rT + 13 / scale) * Math.cos(mid),
+                 (rT + 13 / scale) * Math.sin(mid));
+    tag(ctx, 'α', lp[0], lp[1], '#3f8f50', 11.5, 'center');
+  }
+
+  function worldArc(cx, cy, radius, a0, a1, color, width) {
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = width || 1.5;
+    ctx.beginPath();
+    for (let i = 0; i <= 30; i++) {
+      const a = a0 + (a1 - a0) * (i / 30);
+      const p = P(cx + radius * Math.cos(a), cy + radius * Math.sin(a));
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.stroke(); ctx.restore();
+  }
+
+  function drawScaleBar() {
+    const mm = 500, px = L(mm);
+    const x0 = W - px - 22, y0 = H - 20;
+    ctx.strokeStyle = '#c2ccd8'; ctx.lineWidth = 1.4;
+    line(ctx, x0, y0, x0 + px, y0);
+    line(ctx, x0, y0 - 4, x0, y0 + 4);
+    line(ctx, x0 + px, y0 - 4, x0 + px, y0 + 4);
+    tag(ctx, mm + ' mm', x0 + px / 2, y0 - 8, '#a9b6c6', 10, 'center');
+  }
+
+  // ---------------------------------------------------------------- 侧视
+  function drawSideView() {
+    const m = prep(cvsSide, sctx);
+    const w = m.w, h = m.h, g = sctx;
+    const groundY = h - 20;
+    const topMm = 640;
+    const sy = (groundY - 14) / topMm;
+    const yy = function (mm) { return groundY - mm * sy; };
+
+    g.strokeStyle = '#cbd5e0'; g.lineWidth = 1.4;
+    line(g, 10, groundY, w - 10, groundY);
+    tag(g, '地面', 12, groundY - 5, '#b3c0cf', 10, 'left', w);
+
+    const carH = 90;
+    g.fillStyle = '#dfe7f0'; g.strokeStyle = '#b3c1d1'; g.lineWidth = 1.2;
+    g.beginPath(); g.rect(18, yy(carH), 74, carH * sy); g.fill(); g.stroke();
+
+    const pivotX = 58;
+    // 升降柱
+    g.fillStyle = '#8297ad';
+    g.fillRect(pivotX - 4, yy(S.h), 8, Math.max(0, (S.h - carH) * sy));
+
+    // 臂（三维长度在这个侧视图里按斜长画，横向按 cos 投影）
+    const armLenPx = Math.min(w * 0.46, S.l * sy * 0.95);
+    g.strokeStyle = '#2b3d52'; g.lineWidth = 5; g.lineCap = 'round';
+    line(g, pivotX, yy(S.h), pivotX + armLenPx, yy(S.h));
+
+    // 相机
+    g.beginPath(); g.rect(pivotX + armLenPx - 6, yy(S.h) - 7, 16, 14);
+    g.fillStyle = '#2b3d52'; g.fill();
+
+    // 目标块：立在地面上，高度 z
+    const tX = pivotX + armLenPx + 66;
+    g.fillStyle = 'rgba(217,74,74,.16)';
+    g.strokeStyle = '#d94a4a'; g.lineWidth = 1.5;
+    g.beginPath(); g.rect(tX, yy(S.zt), 26, Math.max(2, S.zt * sy)); g.fill(); g.stroke();
+
+    // 视线（斜向下方）
+    g.save();
+    g.setLineDash([4, 4]); g.strokeStyle = 'rgba(47,111,181,.5)'; g.lineWidth = 1.2;
+    line(g, pivotX + armLenPx + 4, yy(S.h), tX + 13, yy(S.zt));
+    g.restore();
+
+    // 高度标注
+    g.save();
+    g.setLineDash([3, 3]); g.strokeStyle = '#d9a45a'; g.lineWidth = 1;
+    line(g, 12, yy(S.h), pivotX - 4, yy(S.h));
+    line(g, tX - 4, yy(S.zt), tX + 34, yy(S.zt));
+    g.restore();
+    tag(g, 'h = ' + S.h.toFixed(0) + '（相机高度）', 12, yy(S.h) - 5, '#8a5a12', 10.5, 'left', w);
+    tag(g, 'z = ' + S.zt.toFixed(0), tX - 4, Math.max(12, yy(S.zt) - 4), '#a94b4b', 10.5, 'right', w);
+
+    // 提示：h 变了，像素→毫米的尺度也变
+    tag(g, 'h 决定像素→毫米的尺度：同一物体，相机越高，图上越小',
+        w - 14, h - 6, '#98a6b6', 10, 'right', w);
+  }
+
+  // ---------------------------------------------------------------- 时序图
+  //
+  // 横向时间轴：从左往右是时间推进。每条竖线 = 一帧。
+  //
+  // 应答规则（协议 V2.1.0 表 1-16）：
+  //   - 0x0006 的应答就是 0x0008（业务帧即应答），不另回 0x0007。
+  //     电控发出臂状态后超时没收到解算帧，就重发臂状态（seq 不变）。
+  //   - 0x0008 的应答是 0x0007 的 done。视觉等满执行超时（2000ms）没收到，
+  //     就重发解算帧（seq 不变），电控按 echo_seq 认出重复、只补一次 done。
+  //   - 两边各自最多重发 3 次，仍失败就安全停止，不硬撑。
+  //
+  // 页面里的等待时间是压缩过的（这里是演示节奏，不是真实毫秒）。
+  const T_ARM = 150;     // 臂状态发出时刻
+  const T_CALC = 260;    // 视觉取帧 + 解算
+  const T_GAP = 420;     // 一帧发出到对方处理完
+  const T_WAIT = 300;    // 超时后到重发的等待
+  const T_EXEC = 1000;   // 电控执行耗时
+  const T_HOLD = 420;    // 结尾停留
+
+  /** 按丢包场景生成完整事件表。每项：{t, from, to, label, bytes, lost} */
+  function buildEvents() {
+    const mode = S.loss;
+    const ev = [];
+    let t = T_ARM;
+    const sol = S.plan;
+    const cmdBytes = frameCmdHex(sol);
+    const doneBytes = hex([1, 0]);      // ack_seq = 1（解算帧的 seq），结果 0 = 成功
+
+    function arm(lost) {
+      ev.push({ t: t, from: 'mcu', to: 'vis', label: '臂状态 0x0006',
+                bytes: frameArmHex(), lost: !!lost });
+    }
+    function cmd(lost) {
+      ev.push({ t: t, from: 'vis', to: 'mcu', label: '解算 0x0008',
+                bytes: cmdBytes, lost: !!lost });
+    }
+    function done(lost, result) {
+      const bytes = hex([1, result === undefined ? 0 : result]);
+      ev.push({ t: t, from: 'mcu', to: 'vis', label: 'done 0x0007',
+                bytes: bytes, lost: !!lost });
+    }
+
+    // ① 电控粗定位完成后发臂状态
+    arm();
+
+    // ② 视觉取帧、解算、回解算帧（这一帧本身就是对 0x0006 的应答）
+    t += T_CALC;
+    const dropCmd = (mode === 'cmd' || mode === 'both');
+    cmd(dropCmd);
+    t += T_GAP;
+    if (dropCmd) {
+      // 电控没等到解算帧 → 重发臂状态（seq 不变）
+      t += T_WAIT;
+      arm();
+      t += T_CALC;
+      cmd();
+      t += T_GAP;
+    }
+
+    // ③ 电控执行，完成后回 done
+    const tExec0 = t;
+    t += T_EXEC;
+    const dropDone = (mode === 'done' || mode === 'both');
+    const deadDone = (mode === 'dead');
+    done(dropDone || deadDone);
+    t += T_GAP;
+
+    if (dropDone) {
+      // 视觉没收到 done → 重发解算帧（同一 seq），电控认出重复请求，直接再回 done
+      t += T_WAIT;
+      cmd();
+      t += T_GAP / 2;
+      done(false, 1);                    // 结果字节 1 = 重复请求
+      t += T_GAP / 2;
+    } else if (deadDone) {
+      // done 一直丢：视觉重发 3 次仍失败，安全停止
+      for (let i = 0; i < 3; i++) {
+        t += T_WAIT;
+        cmd();
+        t += T_GAP / 2;
+        done(true);
+        t += T_GAP / 2;
+      }
+      ev.push({ t: t, from: 'vis', to: 'vis', label: '3 次失败，安全停止' });
+      t += 60;
+    }
+
+    t += T_HOLD;
+    return { ev: ev, total: t, tExec0: tExec0 };
+  }
+
+  /** 事件表缓存：参数或场景变化时才重建。 */
+  function events() {
+    const sol = S.plan;
+    const key = [S.loss, S.l, S.h, S.alpha, S.xt, S.yt, S.zt,
+                 sol && sol.ok ? sol.d.toFixed(3) : 'x',
+                 sol && sol.ok ? sol.alphaDeg.toFixed(3) : 'x'].join('|');
+    if (!S._evKey || S._evKey !== key) {
+      S._evKey = key;
+      S._ev = buildEvents();
+    }
+    return S._ev;
+  }
+
+  /**
+   * 时序图：左侧标出双方名称，时间从左往右流。
+   *
+   * 之前把「电控」「视觉」放在顶部，看着像横轴标题，而消息又是竖着画的，
+   * 很容易读成「左右是双方、上下是时间」。现在改成两行电平：
+   * 上行是电控，下行是视觉，横向就是时间，每帧是一条竖直连线、
+   * 箭头指向接收方；同一个方向上再画一条就是重发。
+   */
+  function drawSeq() {
+    const m = prep(cvsSeq, qctx);
+    const w = m.w, h = m.h, g = qctx;
+
+    const padL = 76, padR = 16;
+    const yM = 78;                    // 电控这条线
+    const yV = h - 58;                // 视觉这条线
+    const ev = events();
+
+    // 时间映射：左起 padL，右到 padR
+    const X = function (t) { return padL + (w - padR - padL) * (t / ev.total); };
+    const now = S.elapsed === undefined ? 0 : S.elapsed;
+
+    // 两行之间淡淡的分区底色，提醒「上下是两方，横向才是时间」
+    g.fillStyle = 'rgba(244,247,250,.55)';
+    g.fillRect(0, yM - 12, w, yV - yM + 24);
+
+    // 时间刻度，避免“时间”方向再次被误读
+    const ticks = 5;
+    for (let i = 0; i <= ticks; i++) {
+      const t = ev.total * i / ticks;
+      const px = X(t);
+      g.strokeStyle = '#eef2f7'; g.lineWidth = 1;
+      line(g, px, yM - 10, px, yV + 10);
+      tag(g, (t / 1000).toFixed(1) + 's', px, h - 7, '#b9c4d1', 9, 'center', w);
+    }
+    tag(g, '时间 →', 8, 14, '#b9c4d1', 9.5, 'left', w);
+    tag(g, '帧体字节见右侧「实际会发的字节」', 64, 14, '#b0bcca', 9.5, 'left', w);
+
+    // 左侧行标签（写在 padL 左边，压不到任何一帧）
+    tag(g, '电控', 8, yM + 4, '#5d6f84', 11, 'left', w);
+    tag(g, '视觉', 8, yV + 4, '#2f6fb5', 11, 'left', w);
+
+    // 两条水平时间轴（就是双方各自的“生命线”）
+    g.save();
+    g.setLineDash([4, 5]); g.strokeStyle = '#dde5ee'; g.lineWidth = 1;
+    line(g, padL, yM, w - padR, yM);
+    line(g, padL, yV, w - padR, yV);
+    g.restore();
+
+    // ① 连线：竖直贯穿两行，箭头指向接收方
+    ev.ev.forEach(function (e) {
+      if (e.t > now) return;
+      if (e.from === e.to) return;
+      const px = X(e.t);
+      const yA = e.from === 'mcu' ? yM : yV;
+      const yB = e.to === 'mcu' ? yM : yV;
+      const dir = yB > yA ? 1 : -1;
+      const col = e.lost ? '#c9433f' : (e.to === 'vis' ? '#3f8f6a' : '#2f6fb5');
+
+      g.save();
+      g.strokeStyle = col; g.fillStyle = col; g.lineWidth = 1.7;
+      if (e.lost) g.setLineDash([5, 4]);
+      line(g, px, yA, px, yB - dir * 3);
+      const ah = 7;
+      g.beginPath();
+      g.moveTo(px, yB - dir * 2);
+      g.lineTo(px - ah * 0.5, yB - dir * 2 - dir * ah);
+      g.lineTo(px + ah * 0.5, yB - dir * 2 - dir * ah);
+      g.closePath(); g.fill();
+      g.restore();
+
+      // 发送方一端画个实心小点
+      g.beginPath(); g.arc(px, yA, 2.6, 0, Math.PI * 2);
+      g.fillStyle = col; g.fill();
+
+      if (e.lost) {
+        const cy = (yA + yB) / 2;
+        g.strokeStyle = '#c9433f'; g.lineWidth = 2;
+        line(g, px - 6, cy - 6, px + 6, cy + 6);
+        line(g, px + 6, cy - 6, px - 6, cy + 6);
+      }
+    });
+
+    // ② 说明文字分两摞挂在连线外侧：电控发的挂在电控线上方，视觉发的挂在视觉线下方。
+    //    之前把文字放在两条线中间，一上一下挨得近的两帧（比如重发的解算帧与随即的
+    //    done）就会互相压住，白色底还把连线盖掉一截。
+    //
+    //    每摞两行：先试近的那行，放不下就退到远的那行。帧密的时候不至于叠字。
+    //    完整字节在右侧面板「实际会发的字节」里，这里只写帧名，免得十六进制把
+    //    相邻两帧的位置全挤满。
+    const rowMcu = ev.ev.filter(function (e) { return e.from === 'mcu' && e.to !== 'mcu'; });
+    const rowVis = ev.ev.filter(function (e) { return e.from === 'vis' && e.to !== 'vis'; });
+
+    const seen = {};
+    function shortLabel(e) {
+      // 同一条帧第二次出现时只标「重发 0x0008」——帧名重复一遍太长，
+      // 密集场景下两行都放不下。颜色和位置已经指明是哪条帧。
+      const isRepeat = !!seen[e.label];
+      seen[e.label] = true;
+      if (!isRepeat) return e.label;
+      const m = /0x[0-9a-fA-F]{4}/.exec(e.label);
+      return '重发' + (m ? ' ' + m[0] : '');
+    }
+
+    function calloutRow(list, yRows) {
+      const right = yRows.map(function () { return -1e9; });   // 每行已用到的右边界
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i];
+        if (e.t > now) continue;
+        const px = X(e.t);
+        const text = shortLabel(e);
+        const col = e.lost ? '#c9433f' : (e.to === 'vis' ? '#3f8f6a' : '#2f6fb5');
+
+        g.font = '10px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+        const tw = g.measureText(text).width;
+
+        // 按顺序找第一个放得下的行；都放不下就挑右边界最小的那行，
+        // 宁可贴近一点也不叠字。
+        let row = -1;
+        for (let k = 0; k < yRows.length; k++) {
+          if (right[k] + 8 <= px) { row = k; break; }
+        }
+        if (row < 0) {
+          row = 0;
+          for (let k = 1; k < yRows.length; k++) if (right[k] < right[row]) row = k;
+        }
+
+        tag(g, text, px + 8, yRows[row], col, 10, 'left', w - padR);
+        right[row] = px + 8 + tw;
+      }
+    }
+    calloutRow(rowMcu, [yM - 28, yM - 44]);
+    calloutRow(rowVis, [yV + 22, yV + 38]);
+
+    // 自己发给自己的提示（例如“3 次失败，安全停止”）画在两行之间的空白里，
+    // 那里现在没有别的文字，放得下也不会压到生命线。
+    ev.ev.forEach(function (e) {
+      if (e.t > now || e.from !== e.to) return;
+      const px = X(e.t);
+      const ly = (yM + yV) / 2 + 4;      // 两行正中间，那里是空的
+      g.font = '9px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+      const tw = g.measureText(e.label).width;
+      // 贴右边界时往左挪，别被裁掉
+      const bx = Math.min(px - 3, w - padR - tw - 12);
+      g.strokeStyle = '#c9b28a'; g.lineWidth = 1.3; g.fillStyle = '#fdf8ee';
+      rr(g, bx, ly - 9, tw + 10, 17, 3);
+      g.fill(); g.stroke();
+      tag(g, e.label, bx + 5, ly + 3, '#8a5a12', 9, 'left', w - padR);
+    });
+
+    // “现在”的位置
+    if (now > 0 && now < ev.total) {
+      const nx = X(now);
+      g.strokeStyle = 'rgba(47,111,181,.22)'; g.lineWidth = 1;
+      line(g, nx, yM - 10, nx, yV + 10);
+    }
+
+    // 结论
+    if (now >= ev.total - 1) {
+      const bad = (S.loss === 'dead');
+      tag(g, bad ? '失败：done 连丢 3 次，视觉安全停止'
+                 : '完成：解算帧与 done 都收到了',
+          w - padR, 14, bad ? '#c9433f' : '#3f8f50', 10.5, 'right', w);
+    }
+  }
+
+  // ---------------------------------------------------------------- 组帧
+  function i16(v) {
+    const x = Math.round(v) & 0xffff;
+    return [x & 0xff, (x >> 8) & 0xff];
+  }
+  function hex(arr) {
+    return arr.map(function (b) { return (b < 16 ? '0' : '') + b.toString(16); }).join(' ');
+  }
+
+  // 帧体（不含帧头/长度/CRC），与协议表 1-10 / 1-12 逐字节一致。
+  // 单位：mm、0.1°，小端。
+
+  /**
+   * 电控 → 视觉 0x0006，共 7B：
+   *   l(2) h(2) α(2) target_id(1)
+   */
+  function frameArmBytes() {
+    return i16(S.l)
+      .concat(i16(S.h))
+      .concat(i16(S.alpha * 10))
+      .concat([0]);             // target_id：0 = 不指定
+  }
+  function frameArmHex() { return hex(frameArmBytes()); }
+
+  /**
+   * 视觉 → 电控 0x0008，共 10B：
+   *   d(2) α(2) status(1) echo_seq(1) target_x(2) target_y(2)
+   */
+  function frameCmdBytes(sol) {
+    let q = 0;
+    if (sol.ok) {
+      q = 0x80 | 0x20;                            // bit7 可用 + bit4~5 质量「好」
+      if (sol.sweeps) q |= 0x04;                  // bit2 臂会扫过车身
+    } else if (sol.reason && sol.reason.indexOf('够不着') === 0) {
+      q = 0x01;                                   // bit0~1 = 1 横向够不着
+    }
+    return i16(sol.ok ? sol.d : 0)
+      .concat(i16(sol.ok ? sol.alphaDeg * 10 : 0))
+      .concat([q, 1])                             // echo_seq = 1（对应 0x0006 的 seq）
+      .concat(i16(S.xt))
+      .concat(i16(S.yt));
+  }
+  function frameCmdHex(sol) { return hex(frameCmdBytes(sol)); }
+
+  // ---------------------------------------------------------------- 面板
+  const msg = document.getElementById('msg');
+  const hudD = document.getElementById('hudD');
+  const hudT = document.getElementById('hudT');
+  const hudR = document.getElementById('hudR');
+
+  function setMsg(t, cls) {
+    msg.textContent = t;
+    msg.className = 'msg' + (cls ? ' ' + cls : '');
+  }
+
+  function updateHud() {
+    const cam = camPos(S.theta);
+    const res = Math.hypot(S.xt - (S.carX + cam.x), S.yt - cam.y);
+    hudD.textContent = S.carX.toFixed(1) + ' mm';
+    hudT.textContent = (S.theta * 180 / Math.PI).toFixed(1) + '°';
+    hudR.textContent = res.toFixed(1) + ' mm';
+    hudR.style.color = res < 1 ? '#3f9a55' : (res < 30 ? '#b06f18' : '#1b2430');
+  }
+
+  function updatePanel() {
+    const sol = solve();
+    S.plan = sol;
+
+    document.getElementById('ol').textContent = S.l.toFixed(0);
+    document.getElementById('oh').textContent = S.h.toFixed(0);
+    document.getElementById('oa').textContent = S.alpha.toFixed(0) + '°';
+    document.getElementById('ox').textContent = S.xt.toFixed(0);
+    document.getElementById('oy').textContent = S.yt.toFixed(0);
+    document.getElementById('oz').textContent = S.zt.toFixed(0);
+
+    const eqA = document.getElementById('eqA');
+    const eqD = document.getElementById('eqD');
+
+    if (sol.ok) {
+      eqA.innerHTML = 'asin(y / l) = asin(' + S.yt.toFixed(0) + ' / ' +
+        S.l.toFixed(0) + ')  →  <b>' + sol.alphaDeg.toFixed(1) + '°</b>';
+      eqD.innerHTML = 'x − l·cos α = ' + S.xt.toFixed(1) + ' − ' +
+        (S.l * Math.cos(sol.alpha)).toFixed(1) + '  →  <b>' + sol.d.toFixed(1) + ' mm</b>';
+    } else {
+      eqA.innerHTML = '<b style="color:#c03a3a">无解（|y| &gt; l）</b>';
+      eqD.innerHTML = '—';
+    }
+
+    document.getElementById('frames').innerHTML =
+      '<em>0x0006 电控→视觉 · 7B</em>\n' + frameArmHex() + '\n\n' +
+      '<em>0x0008 视觉→电控 · 10B</em>\n' + frameCmdHex(sol);
+  }
+
+  /**
+   * 按当前时间点给出左侧提示。事件表是唯一事实来源，所以这里只需
+   * 找到「当前时间之前最后一个事件」，用它的语义描述现状。
+   */
+  function stageMsg(el, ev) {
+    const sol = S.plan;
+    if (!sol) return;
+    if (!sol.ok) { setMsg(sol.reason, 'bad'); return; }
+
+    const past = ev.ev.filter(function (e) { return e.t <= el; });
+    const last = past.length ? past[past.length - 1] : null;
+    const armCount = past.filter(function (e) {
+      return e.label.indexOf('臂状态') === 0;
+    }).length;
+    const cmdCount = past.filter(function (e) {
+      return e.label.indexOf('解算') === 0 && !e.lost;
+    }).length;
+
+    if (el < ev.tExec0) {
+      if (!last) {
+        setMsg('电控正在粗定位：把相机开到目标附近。此时臂在 α = ' +
+               S.alpha.toFixed(0) + '°，车还没动。', '');
+      } else if (last.label.indexOf('臂状态') === 0) {
+        setMsg('电控发出 0x0006 臂状态（第 ' + armCount + ' 次）：l = ' + S.l.toFixed(0) +
+               '，h = ' + S.h.toFixed(0) + '，α = ' + S.alpha.toFixed(0) + '°。' +
+               '这一帧的应答就是视觉回的 0x0008，不另回 0x0007。', '');
+      } else if (last.label.indexOf('解算') === 0) {
+        if (last.lost) {
+          setMsg('视觉回了 d = ' + sol.d.toFixed(1) + ' mm、α = ' +
+                 sol.alphaDeg.toFixed(1) + '°，但这帧丢了。电控等不到就重发臂状态。', 'warn');
+        } else {
+          setMsg('视觉回 d = ' + sol.d.toFixed(1) + ' mm，α = ' +
+                 sol.alphaDeg.toFixed(1) + '°（相对电机系 +x 的绝对角）。' +
+                 '电控收到，开始执行。', 'ok');
+        }
+      }
+      return;
+    }
+
+    // 执行阶段之后
+    const hasDone = past.some(function (e) {
+      return e.label.indexOf('done') === 0 && !e.lost;
+    });
+    if (!hasDone) {
+      setMsg('电控执行中：先沿 x 移 ' + sol.d.toFixed(1) + ' mm，再把臂转到 ' +
+             sol.alphaDeg.toFixed(1) + '°。', 'ok');
+    } else if (cmdCount >= 2 && S.loss !== 'none') {
+      setMsg('视觉没等到 done，重发了解算帧（同 seq）。电控认出是重复请求，' +
+             '不再重复动作，直接再回一次 done。', '');
+    } else {
+      setMsg('电控收到解算帧后执行完毕，回 done。视觉收到 done，这一轮结束。', 'ok');
+    }
+  }
+
+  // ---------------------------------------------------------------- 动画
+  let raf = null, t0 = 0;
+
+  function stopAnim() {
+    if (raf) { cancelAnimationFrame(raf); raf = null; }
+  }
+
+  function reset() {
+    stopAnim();
+    S.carX = 0;
+    S.theta = S.alpha * Math.PI / 180;
+    S.revealPlan = false;
+    S.elapsed = 0;
+    S._evKey = null;
+    updatePanel();
+    drawAll();
+    if (!S.plan.ok) setMsg(S.plan.reason, 'bad');
+    else setMsg('点“开始通信”，看一次完整问答。', '');
+  }
+
+  function run() {
+    stopAnim();
+    updatePanel();
+    if (!S.plan.ok) { setMsg(S.plan.reason, 'bad'); drawAll(); return; }
+
+    S.carX = 0;
+    S.theta = S.alpha * Math.PI / 180;
+    S.revealPlan = false;
+    S.elapsed = 0;
+    S._evKey = null;
+    const ev = events();
+    t0 = performance.now();
+    setMsg('开始：电控先粗定位，再把臂状态发过来。', '');
+    drawAll();
+
+    function frame(now) {
+      const el = now - t0;
+      S.elapsed = Math.min(el, ev.total);
+
+      // 解算帧出现后才展示终态
+      const cmdAt = (ev.ev.filter(function (e) {
+        return e.from === 'vis' && e.to === 'mcu' && !e.lost;
+      })[0] || {}).t;
+      S.revealPlan = (cmdAt !== undefined && el >= cmdAt);
+
+      // 执行阶段：从 tExec0 起 1 秒内同时移动车和臂
+      const p = Math.min(1, Math.max(0, (el - ev.tExec0) / T_EXEC));
+      const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      S.carX = S.plan.d * e;
+      S.theta = (S.alpha + (S.plan.alphaDeg - S.alpha) * e) * Math.PI / 180;
+
+      stageMsg(el, ev);
+      drawAll();
+
+      if (el < ev.total) raf = requestAnimationFrame(frame);
+      else {
+        raf = null;
+        S.elapsed = ev.total;
+        S.carX = S.plan.d;
+        S.theta = S.plan.alphaDeg * Math.PI / 180;
+        S.revealPlan = true;
+        finalMsg();
+        drawAll();
+      }
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  /** 按丢包场景给出收尾结论。 */
+  function finalMsg() {
+    const sol = S.plan;
+    if (!sol || !sol.ok) return;
+    const base = '电控执行：先沿 x 移 ' + sol.d.toFixed(1) + ' mm，再把臂转到 ' +
+                 sol.alphaDeg.toFixed(1) + '°。';
+    if (S.loss === 'none') {
+      setMsg('完成。' + base + '解算帧被电控接收，done 被视觉接收，一轮问答闭合。', 'ok');
+    } else if (S.loss === 'cmd') {
+      setMsg('解算帧丢了一次，电控超时没等到就重发臂状态，视觉第二次成功送达。' + base, 'ok');
+    } else if (S.loss === 'done') {
+      setMsg('done 丢了一次，视觉等满执行超时（2000ms）后重发解算帧（同 seq），电控认出重复请求直接再回 done。' + base, 'ok');
+    } else if (S.loss === 'both') {
+      setMsg('两处各丢一次，都靠重发补齐。' + base, 'ok');
+    } else {
+      setMsg('done 连丢 3 次，视觉重发 3 次仍没收到，按规则安全停止，不再继续动作。', 'bad');
+      return;
+    }
+    if (sol.sweeps) {
+      msg.textContent += ' ⚠ 臂会摆过 90°，可能扫到车身。';
+      msg.className = 'msg warn';
+    }
+  }
+
+  function drawAll() {
+    drawTop();
+    drawSideView();
+    drawSeq();
+    updateHud();
+  }
+
+  // ---------------------------------------------------------------- 交互
+  [['rl', 'l'], ['rh', 'h'], ['ra', 'alpha'], ['rx', 'xt'],
+   ['ry', 'yt'], ['rz', 'zt']].forEach(function (it) {
+    const el = document.getElementById(it[0]);
+    el.addEventListener('input', function () {
+      S[it[1]] = parseFloat(el.value);
+      reset();
+    });
+  });
+
+  document.getElementById('run').addEventListener('click', run);
+  document.getElementById('reset').addEventListener('click', reset);
+
+  // 丢包场景：切换后立刻重建事件表并重画时序图
+  const lossSel = document.getElementById('loss');
+  const lossText = {
+    none: '不丢包', cmd: '解算帧丢 1 次', done: 'done 丢 1 次',
+    both: '各丢 1 次', dead: 'done 一直丢'
+  };
+  lossSel.addEventListener('change', function () {
+    S.loss = lossSel.value;
+    document.getElementById('oloss').textContent = lossText[S.loss] || S.loss;
+    reset();
+  });
+
+  // 拖动目标点
+  let dragging = false;
+  function toWorld(ev) {
+    const r = cvs.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    return { x: VIEW_CX + (py - oy) / scale, y: VIEW_CY + (px - ox) / scale };
+  }
+  cvs.addEventListener('pointerdown', function (ev) {
+    const r = cvs.getBoundingClientRect();
+    const t = P(S.xt, S.yt);
+    if (Math.hypot(ev.clientX - r.left - t[0], ev.clientY - r.top - t[1]) < 26) {
+      dragging = true;
+      cvs.setPointerCapture(ev.pointerId);
+      stopAnim();
+      S.carX = 0; S.theta = S.alpha * Math.PI / 180;
+      S.elapsed = 0;
+      S.revealPlan = true;
+    }
+  });
+  cvs.addEventListener('pointermove', function (ev) {
+    if (!dragging) return;
+    const wv = toWorld(ev);
+    S.xt = Math.max(-150, Math.min(1000, Math.round(wv.x / 5) * 5));
+    S.yt = Math.max(-250, Math.min(800, Math.round(wv.y / 5) * 5));
+    document.getElementById('rx').value = S.xt;
+    document.getElementById('ry').value = S.yt;
+    updatePanel();
+    drawAll();
+  });
+  cvs.addEventListener('pointerup', function () { dragging = false; });
+  cvs.addEventListener('pointercancel', function () { dragging = false; });
+
+  // ---------------------------------------------------------------- 启动
+  reset();
+  window.addEventListener('resize', function () { drawAll(); });
+
+  // 调试出口：供自动化验收读取事件表，正常使用不影响页面
+  window.__ev = function () { return events(); };
+})();
+</script>
+</body>
+</html>

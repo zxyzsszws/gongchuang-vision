@@ -1,0 +1,924 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>机械臂目标解算演示 · d 与 yaw</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{display:flex;height:100vh;overflow:hidden;background:#eef1f5;color:#1b2430;
+       font-family:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+  .stage{position:relative;flex:1 1 auto;min-width:0;background:#fbfcfe}
+  #top{display:block;width:100%;height:100%}
+  .panel{flex:0 0 380px;background:#fff;border-left:1px solid #dfe5ec;
+         padding:16px 18px 34px;overflow-y:auto}
+  h1{font-size:16px;margin:0 0 4px;letter-spacing:.2px}
+  .sub{margin:0 0 16px;font-size:12px;line-height:1.65;color:#6b7a8c}
+  h2{font-size:12px;margin:18px 0 8px;color:#6b7a8c;font-weight:600;
+     letter-spacing:.6px;text-transform:uppercase}
+  .ctl{margin-bottom:12px}
+  .lab{display:flex;justify-content:space-between;align-items:baseline;
+       font-size:12.5px;color:#4a5768;margin-bottom:5px}
+  .lab b{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+         font-size:13px;color:#1b2430;font-weight:600}
+  input[type=range]{width:100%;-webkit-appearance:none;appearance:none;height:20px;
+    background:transparent;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:#dbe3ec}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;
+    border-radius:50%;background:#2f6fb5;margin-top:-5px;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+  input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:#dbe3ec}
+  input[type=range]::-moz-range-thumb{width:14px;height:14px;border:0;border-radius:50%;background:#2f6fb5}
+  .chk{display:flex;gap:7px;align-items:flex-start;font-size:12px;color:#5a6879;
+       line-height:1.5;margin:4px 0 14px;cursor:pointer}
+  .btns{display:flex;gap:8px}
+  button{flex:1;padding:9px 10px;border-radius:7px;border:1px solid #cfd9e5;
+         background:#fff;color:#33414f;font-size:13px;font-family:inherit;cursor:pointer}
+  button:hover{background:#f4f7fa}
+  button.primary{background:#2f6fb5;border-color:#2f6fb5;color:#fff;font-weight:600}
+  button.primary:hover{background:#2a639f}
+  .msg{margin-top:11px;font-size:12px;line-height:1.65;color:#4a5768;
+       background:#f5f8fb;border-left:3px solid #cfd9e5;padding:8px 10px;border-radius:0 5px 5px 0}
+  .msg.warn{background:#fff6e8;border-left-color:#e8912b;color:#8a5a12}
+  .msg.bad{background:#fdf0f0;border-left-color:#d94a4a;color:#a02b2b}
+  .msg.ok{background:#f1f8f2;border-left-color:#3f9a55;color:#2b6b3b}
+  .eq{display:flex;gap:9px;align-items:baseline;padding:7px 0;border-bottom:1px dashed #e6ebf1}
+  .eq:last-child{border-bottom:0}
+  .eq i{flex:0 0 22px;font-style:italic;font-family:Georgia,serif;font-size:15px;
+        color:#2f6fb5;text-align:right}
+  .eq code{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+           font-size:12.5px;color:#33414f;white-space:pre-wrap;line-height:1.5}
+  .eq code b{color:#1b2430}
+  .note{font-size:11.5px;line-height:1.7;color:#78879a;margin:10px 0 0}
+  .note code{font-family:ui-monospace,Consolas,monospace;background:#f3f6fa;
+             padding:1px 4px;border-radius:3px;font-size:11px}
+  #side{display:block;width:100%;height:132px;border:1px solid #e6ebf1;
+        border-radius:6px;background:#fbfcfe}
+  .hud{position:absolute;left:16px;top:14px;display:flex;gap:18px;
+       background:rgba(255,255,255,.9);backdrop-filter:blur(6px);
+       border:1px solid #e2e8ef;border-radius:8px;padding:9px 14px;
+       font-size:11.5px;color:#6b7a8c;pointer-events:none}
+  .hud div{display:flex;flex-direction:column;gap:2px}
+  .hud b{font-family:ui-monospace,"Cascadia Mono",Consolas,monospace;
+         font-size:13.5px;color:#1b2430;font-weight:600}
+  .legend{position:absolute;left:16px;bottom:14px;font-size:11.5px;color:#78879a;
+          line-height:1.9;pointer-events:none}
+  .legend i{display:inline-block;width:14px;height:3px;border-radius:2px;
+            margin-right:7px;vertical-align:middle}
+  .axes{position:absolute;right:18px;top:14px;font-size:11px;color:#9aa8b8;
+        line-height:1.7;text-align:right;pointer-events:none}
+  @media (max-width:900px){
+    body{flex-direction:column}
+    .panel{flex:0 0 auto;width:100%;border-left:0;border-top:1px solid #dfe5ec}
+    .stage{flex:0 0 58vh}
+  }
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <canvas id="top"></canvas>
+  <div class="hud">
+    <div><span>车已前进 d</span><b id="hudD">0.0 mm</b></div>
+    <div><span>臂当前 yaw</span><b id="hudA">0.0°</b></div>
+    <div><span>末端距目标</span><b id="hudR">—</b></div>
+  </div>
+  <div class="legend">
+    <div><i style="background:#9db9d8"></i>可达圆弧（半径 = 臂长 l）</div>
+    <div><i style="background:#e8912b"></i>车沿 x 的移动量 d</div>
+    <div><i style="background:#2f6fb5"></i>臂的转角 α</div>
+  </div>
+  <div class="axes">
+    x 向前（画面↓）　y 向右即车身右侧（画面→）<br>
+    电机坐标系原点在车身右边缘　α 从 +x 量起，向 +y 为正
+  </div>
+</div>
+
+<aside class="panel">
+  <h1>机械臂目标解算</h1>
+  <p class="sub">目标在电机坐标系下 → 车沿 x 前进量 <b>d</b>＋臂 yaw <b>α</b>。伸出长度 l 固定，所以「够不着」只能靠挪车补。</p>
+
+  <section>
+    <div class="ctl">
+      <div class="lab"><span>目标 x（向前，mm）</span><b id="ox">700</b></div>
+      <input type="range" id="rx" min="-150" max="950" step="5" value="700">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>目标 y（+y 即画面向右，mm）</span><b id="oy">280</b></div>
+      <input type="range" id="ry" min="-300" max="750" step="5" value="280">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>臂水平长度 l（mm）</span><b id="ol">600</b></div>
+      <input type="range" id="rl" min="350" max="700" step="10" value="600">
+    </div>
+    <div class="ctl">
+      <div class="lab"><span>目标高度 z（mm）</span><b id="oz">120</b></div>
+      <input type="range" id="rz" min="0" max="400" step="5" value="120">
+    </div>
+
+    <label class="chk">
+      <input type="checkbox" id="back">
+      <span>取另一支解（臂朝车头另一侧摆，车要多走一段）—— 通常会扫过车身，仅用于看几何</span>
+    </label>
+
+    <div class="btns">
+      <button id="run" class="primary">求解并执行</button>
+      <button id="reset">重置</button>
+    </div>
+    <div id="msg" class="msg">拖动红点或调滑块，然后点“求解并执行”。</div>
+  </section>
+
+  <h2>解算</h2>
+  <div class="eq"><i>α</i><code id="eqA">—</code></div>
+  <div class="eq"><i>d</i><code id="eqD">—</code></div>
+  <div class="eq"><i>h</i><code id="eqH">—</code></div>
+
+  <h2>侧视：高度那一路</h2>
+  <canvas id="side"></canvas>
+  <p class="note">高度是独立轴，与水平伸出无关；抬高不会改变 l。<br>
+  若臂是<b>定长连杆</b>而不是独立的直线伸出轴，抬高 Δz 后水平可达距离会变成
+  <code>√(L²−Δz²)</code>，那就不是现在这个模型了。</p>
+
+  <h2>推导</h2>
+  <p class="note">
+  末端 = 转轴 + <code>(l·cos α, l·sin α)</code>，距转轴恒为 l。<br>
+  车的 x 移动只能改变「前后」，横向差额只能靠转臂：<br><br>
+  <code>α = asin(y / l)</code>　← 横向<br>
+  <code>d = x − l·cos α</code>　← 前后<br><br>
+  <b>|y| &gt; l 就无解</b>：转多少度都补不回来。<br>
+  d 为正表示往前开，为负表示倒车。<br><br>
+  本图取 +y 朝车身右侧、车身在 y&lt;0 一侧。x 向前、y 向右、z 向上时
+  是左手排布；若要右手系，需把 y 定义成车身左侧（车身就落在 +y 一侧），
+  两者只影响取号和三维扩展，二维公式形式不变。
+  </p>
+</aside>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------------- 常量与状态 ----------------
+  const GRIP = 20;                                    // 夹爪中心相对臂轴的垂直偏置（mm）
+
+  // 车身：电机坐标系原点在车身**右侧边的中点**（转轴处）。
+  //   x ∈ [carX − len/2, carX + len/2]   沿车长前后居中
+  //   y ∈ [−width, 0]                    0 就是右边缘，车身往左展开
+  const CAR = { len: 800, width: 620 };
+
+  const S = {
+    xt: 700, yt: 550, l: 600, zt: 120,
+    branch: 'front',        // front：α 落在 ±90° 内，臂在车头这半侧
+    carX: 0, theta: 0,
+    phase: 'idle',
+    trace: []
+  };
+
+  // ---------------- 坐标映射 ----------------
+  //
+  // 俯视图，与手绘示意图一致：
+  //
+  //   世界 x（车头方向）  →  画面 ↓
+  //   世界 y（车身左侧）  →  画面 →
+  //   世界 z（竖直向上）  →  指向纸外
+  //
+  // 车的长轴沿 x，所以车身在画面上是竖着的，轮子也竖着。臂从转轴朝 y 方向
+  // （画面右侧）伸出：α=0 时臂正指右方，α 增大时臂朝车头方向（画面下方）摆。
+  //
+  // 画布自身的 y 轴朝下，跟世界 x 同向、跟世界 y 垂直，所以这里不能把世界角度
+  // 直接喂给 canvas 的 arc()——角度正方向会反。所有圆弧都按世界坐标采样再投影。
+  let W = 880, H = 620, scale = 0.42;
+  let VIEW_CX = 260, VIEW_CY = 0;     // 画面中心对应的世界坐标
+  let ox = 440, oy = 310;
+
+  /** 世界坐标 → 画布像素。 */
+  function P(wx, wy) {
+    return [ox + (wy - VIEW_CY) * scale, oy + (wx - VIEW_CX) * scale];
+  }
+  /** 世界长度 → 像素长度。 */
+  function L(mm) { return mm * scale; }
+
+  const cvs = document.getElementById('top');
+  const ctx = cvs.getContext('2d');
+
+  function fit() {
+    const r = cvs.getBoundingClientRect();
+    W = Math.max(320, r.width);
+    H = Math.max(260, r.height);
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cvs.width = Math.round(W * dpr);
+    cvs.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ox = W / 2;
+    oy = H / 2;
+  }
+
+  /** d 的尺寸线沿 y 方向让开一段，别压在臂杆上。 */
+  function dDimY() {
+    const side = S.yt >= 0 ? 1 : -1;
+    return S.yt + side * 190;
+  }
+
+  /**
+   * 视野：把「车走过的整段」「测量原点」「目标」「末端」都框进来。
+   *
+   * 倒车时车尾会甩到 x 负方向很远，固定视野会把车身推出画面。这里按包围盒
+   * 定中心和比例，并且在动画开始前就按终点算好，过程中不再变——画布缩放一动，
+   * 读图的人会误以为尺寸变了。
+   *
+   * 注意世界 x 映射到画面竖向、世界 y 映射到画面横向，所以两个方向的像素
+   * 预算要对调着用。
+   */
+  function updateView(overrideD) {
+    const d = (overrideD === undefined) ? S.carX : overrideD;
+    const sol = solve();
+    const xs = [0, S.xt, d - CAR.len / 2, d + CAR.len / 2, d + S.l, d - S.l];
+    if (sol.ok) xs.push(sol.h);
+    const ys = [0, S.yt, dDimY(), 0, -CAR.width, S.l, -S.l];
+    const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    const y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    VIEW_CX = (x0 + x1) / 2;
+    VIEW_CY = (y0 + y1) / 2;
+    const spanX = Math.max(720, (x1 - x0) + 240);   // → 画面竖向
+    const spanY = Math.max(700, (y1 - y0) + 260);   // → 画面横向
+    scale = Math.min(W / spanY, H / spanX);
+  }
+
+  // ---------------- 解算 ----------------
+  //
+  // α 是臂相对车头方向（+x）的偏角，向 +y（车身左侧）为正——这就是三维里常用
+  // 的 yaw，与手绘图一致。末端在电机系下 = (l·cos α, l·sin α)：
+  //   横向 l·sin α = y  → 只能靠转臂
+  //   纵向差额        → 只能靠挪车
+  function solve() {
+    const { xt, yt, l } = S;
+    if (!(l > 0)) return { ok: false, reason: '臂长必须大于 0' };
+    if (Math.abs(yt) > l) {
+      return {
+        ok: false,
+        reason: '够不到：|y| = ' + Math.abs(yt).toFixed(0) + ' mm 已超过臂长 l = ' +
+                l.toFixed(0) + ' mm。横向差额只能靠转臂，转多少度都补不回来。'
+      };
+    }
+    const s = Math.max(-1, Math.min(1, yt / l));
+    const asin = Math.asin(s);                        // −90°..+90°
+    const alpha = S.branch === 'front' ? asin : Math.sign(asin || 1) * (Math.PI - Math.abs(asin));
+    const alphaDeg = alpha * 180 / Math.PI;
+
+    const h = l * Math.cos(alpha);                    // 有符号：不挪车时末端的前后位置
+    const d = xt - h;
+
+    // 臂摆过 90° 就指到转轴后方，会从车身里穿过去
+    const sweeps = Math.abs(alphaDeg) > 90.0;
+
+    return { ok: true, s, asin, alpha, alphaDeg, h, d, sweeps };
+  }
+
+  function effector() {
+    return { x: S.l * Math.cos(S.theta), y: S.l * Math.sin(S.theta) };
+  }
+  function effectorWorld() {
+    const e = effector();
+    return { x: S.carX + e.x, y: e.y };
+  }
+
+  // ---------------- 绘图小工具 ----------------
+  function rr(x, y, w, h, r) {
+    r = Math.max(0, Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function line(x1, y1, x2, y2) {
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  function wline(ax, ay, bx, by) {
+    const p = P(ax, ay), q = P(bx, by);
+    line(p[0], p[1], q[0], q[1]);
+  }
+
+  function arrow(x1, y1, x2, y2, color, width) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = width || 2;
+    line(x1, y1, x2, y2);
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    const s = 8;
+    ctx.beginPath();
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - s * Math.cos(a - 0.4), y2 - s * Math.sin(a - 0.4));
+    ctx.lineTo(x2 - s * Math.cos(a + 0.4), y2 - s * Math.sin(a + 0.4));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function text(str, x, y, color, size, align) {
+    ctx.fillStyle = color || '#5a6879';
+    ctx.font = (size || 12) + 'px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(str, x, y);
+  }
+
+  /** 带白底、自动夹进画布的文字：压在虚线或网格上仍读得清。 */
+  function tag(str, x, y, color, size, align) {
+    size = size || 11.5;
+    ctx.font = size + 'px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.textAlign = align || 'left';
+    ctx.textBaseline = 'alphabetic';
+    const w = ctx.measureText(str).width;
+    let left = align === 'right' ? x - w : (align === 'center' ? x - w / 2 : x);
+    if (left + w > W - 6) left = W - 6 - w;
+    if (left < 6) left = 6;
+    const drawX = align === 'right' ? left + w : (align === 'center' ? left + w / 2 : left);
+    ctx.fillStyle = 'rgba(255,255,255,.9)';
+    ctx.fillRect(left - 3, y - size + 1, w + 6, size + 5);
+    ctx.fillStyle = color || '#5a6879';
+    ctx.fillText(str, drawX, y);
+  }
+
+  /**
+   * 世界坐标下的角度弧：按世界角度采样再逐点投影。
+   *
+   * 不直接用 canvas 的 arc()：画布 y 轴朝下，角度正方向是顺时针，而世界角度
+   * 逆时针为正；再叠加「世界 x 映射到画面竖向」这一层，直接用 canvas 角度
+   * 很容易画到相反的一侧。采样再投影不会错。
+   */
+  function worldArc(cx, cy, radius, a0, a1, color, width) {
+    const n = 32;
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width || 1.6;
+    ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+      const a = a0 + (a1 - a0) * (i / n);
+      // α 从 +x 量起，向 +y 为正：末端方向 = (cos a, sin a)
+      const p = P(cx + radius * Math.cos(a), cy + radius * Math.sin(a));
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // ---------------- 各部件 ----------------
+  function drawGrid() {
+    const step = 100;
+    const xLo = VIEW_CX - (H / 2) / scale, xHi = VIEW_CX + (H / 2) / scale;
+    const yLo = VIEW_CY - (W / 2) / scale, yHi = VIEW_CY + (W / 2) / scale;
+
+    // 世界 x 为常数 → 画面上的水平线
+    for (let gx = Math.ceil(xLo / step) * step; gx <= xHi; gx += step) {
+      const major = gx % 500 === 0;
+      ctx.strokeStyle = major ? '#e3e9f1' : '#f2f5f8';
+      ctx.lineWidth = 1;
+      const p = P(gx, yLo);
+      line(0, Math.round(p[1]) + .5, W, Math.round(p[1]) + .5);
+      if (major) text(gx + '', W - 8, Math.round(p[1]) - 4, '#b9c4d1', 10, 'right');
+    }
+    // 世界 y 为常数 → 画面上的竖线
+    for (let gy = Math.ceil(yLo / step) * step; gy <= yHi; gy += step) {
+      const major = gy % 500 === 0;
+      ctx.strokeStyle = major ? '#e3e9f1' : '#f2f5f8';
+      ctx.lineWidth = 1;
+      const p = P(xLo, gy);
+      line(Math.round(p[0]) + .5, 0, Math.round(p[0]) + .5, H);
+      if (major && gy !== 0) text(gy + '', Math.round(p[0]) + 4, H - 8, '#b9c4d1', 10);
+    }
+
+    // y=0：车身中线，画深一点
+    ctx.strokeStyle = '#d5dde7';
+    ctx.lineWidth = 1.4;
+    wline(xLo, 0, xHi, 0);
+  }
+
+  function drawReach() {
+    const p = P(S.carX, 0);
+    ctx.save();
+    ctx.fillStyle = 'rgba(157,185,216,.09)';
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], L(S.l), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.setLineDash([7, 7]);
+    ctx.strokeStyle = '#9db9d8';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], L(S.l), 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** 世界坐标下的填充矩形（x0..x1 / y0..y1，单位 mm）。 */
+  function worldRect(x0, y0, x1, y1, radiusPx) {
+    const p = P(Math.min(x0, x1), Math.min(y0, y1));
+    const q = P(Math.max(x0, x1), Math.max(y0, y1));
+    rr(p[0], p[1], q[0] - p[0], q[1] - p[1], radiusPx || 0);
+  }
+
+  function drawCar() {
+    // 车身在世界坐标里是轴对齐矩形；x 映射竖向、y 映射横向，投影后依然轴对齐
+    // 右边缘在 y=0（转轴处），向左展开到 y=−CAR.width
+    const halfL = CAR.len / 2;
+    const bodyX0 = S.carX - halfL, bodyX1 = S.carX + halfL;
+
+    // 四个轮子：沿 x 前后各一对，各跨在车身左右两条边上。
+    // 轮子在世界坐标里是 120mm（沿 x）× 38mm（沿 y）的矩形，凸出车身 34mm。
+    const WHEEL = { halfLen: 60, overhang: 34, thick: 38 };
+    ctx.fillStyle = '#8d99a8';
+    [S.carX - 210, S.carX + 210].forEach(function (wx) {
+      // 右侧轮：y ∈ [0, +thick]，贴在 y=0 这条边上
+      worldRect(wx - WHEEL.halfLen, 0,
+                wx + WHEEL.halfLen, WHEEL.thick, L(6));
+      ctx.fill();
+      // 左侧轮：y ∈ [−width−thick, −width]，贴在左边缘外侧
+      worldRect(wx - WHEEL.halfLen, -CAR.width - WHEEL.thick,
+                wx + WHEEL.halfLen, -CAR.width, L(6));
+      ctx.fill();
+    });
+
+    const a = P(bodyX0, 0);
+    const b = P(bodyX1, -CAR.width);
+    const x1 = Math.min(a[0], b[0]), x2 = Math.max(a[0], b[0]);
+    const y1 = Math.min(a[1], b[1]), y2 = Math.max(a[1], b[1]);
+
+    const grad = ctx.createLinearGradient(x1, y1, x2, y2);
+    grad.addColorStop(0, '#e7eef6');
+    grad.addColorStop(1, '#d2deeb');
+    ctx.fillStyle = grad;
+    ctx.strokeStyle = '#a9b9cb';
+    ctx.lineWidth = 1.6;
+    rr(x1, y1, x2 - x1, y2 - y1, L(26));
+    ctx.fill();
+    ctx.stroke();
+
+    // 车头在 +x 端（画面下方），加一道边线让朝向一眼可辨
+    ctx.strokeStyle = '#9db0c4';
+    ctx.lineWidth = 5;
+    ctx.lineCap = 'round';
+    line(x1 + L(28), y2 - 4, x2 - L(28), y2 - 4);
+
+    text('车身', (x1 + x2) / 2, (y1 + y2) / 2 + 5, '#93a2b3', 13, 'center');
+  }
+
+  function drawFrames() {
+    const g = P(0, 0);
+    ctx.save();
+    ctx.setLineDash([3, 5]);
+    ctx.strokeStyle = '#cfd9e5';
+    ctx.lineWidth = 1;
+    line(g[0] - 14, g[1], g[0] + 14, g[1]);
+    line(g[0], g[1] - 14, g[0], g[1] + 14);
+    ctx.restore();
+    tag('测量原点', g[0] - 13, g[1] - 12, '#c2ccd8', 10, 'right');
+
+    // 当前电机坐标系：x 朝画面下方，y 朝画面右方
+    const o = P(S.carX, 0);
+    const ax = 160;
+    const px = P(S.carX + ax, 0), py = P(S.carX, ax);
+    arrow(o[0], o[1], px[0], px[1], '#7c8fa6', 1.6);
+    arrow(o[0], o[1], py[0], py[1], '#7c8fa6', 1.6);
+    text('x', px[0] + 6, px[1] + 10, '#7c8fa6', 12);
+    text('y', py[0] + 6, py[1] + 12, '#7c8fa6', 12);
+  }
+
+  function drawArm() {
+    const o = P(S.carX, 0);
+    const e = effector();
+    const tip = P(S.carX + e.x, e.y);
+
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#2b3d52';
+    ctx.lineWidth = 11;
+    line(o[0], o[1], tip[0], tip[1]);
+    ctx.strokeStyle = '#8297ad';
+    ctx.lineWidth = 6;
+    line(o[0], o[1], tip[0], tip[1]);
+
+    // 转轴
+    ctx.beginPath();
+    ctx.arc(o[0], o[1], 8, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = '#2b3d52';
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+
+    // 末端：相机/夹爪，朝向沿臂
+    const ang = Math.atan2(tip[1] - o[1], tip[0] - o[0]);
+    ctx.save();
+    ctx.translate(tip[0], tip[1]);
+    ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.rect(-12, -11, 26, 22);
+    ctx.fillStyle = '#2b3d52';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(6, 0, 4, 0, Math.PI * 2);
+    ctx.fillStyle = '#8fd0ff';
+    ctx.fill();
+    ctx.restore();
+
+    // l 标注：沿臂的垂直方向偏出去，别压在杆上
+    const mx = S.carX + e.x / 2, my = e.y / 2;
+    const perpX = Math.cos(S.theta), perpY = -Math.sin(S.theta);
+    const lp = P(mx + perpX * 105, my + perpY * 105);
+    tag('l = ' + S.l.toFixed(0), lp[0], lp[1], '#5d7c9c', 11.5, 'center');
+  }
+
+  function drawTarget() {
+    const t = P(S.xt, S.yt);
+
+    // 分量虚线（相对测量原点）：先沿 x 走，再沿 y 走
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = '#d2dbe6';
+    ctx.lineWidth = 1.2;
+    wline(0, 0, S.xt, 0);
+    wline(S.xt, 0, S.xt, S.yt);
+    ctx.restore();
+
+    const midX = P(S.xt / 2, 0);
+    if (Math.abs(S.xt) > 50) {
+      tag('x = ' + S.xt.toFixed(0), midX[0] - 12, midX[1], '#a9b6c6', 10.5, 'right');
+    }
+    const midY = P(S.xt, S.yt / 2);
+    if (Math.abs(S.yt) > 50) tag('y = ' + S.yt.toFixed(0), midY[0], midY[1] - 9, '#a9b6c6', 10.5, 'center');
+
+    // 目标点
+    ctx.beginPath();
+    ctx.arc(t[0], t[1], 13, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(217,74,74,.13)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(t[0], t[1], 5.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#d94a4a';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(217,74,74,.45)';
+    ctx.lineWidth = 1;
+    line(t[0] - 17, t[1], t[0] + 17, t[1]);
+    line(t[0], t[1] - 17, t[0], t[1] + 17);
+
+    tag('目标', t[0] + 14, t[1] - 10, '#c03a3a', 11.5, 'left');
+  }
+
+  function drawSolution(sol) {
+    if (!sol.ok) return;
+
+    // 「只转臂能到」：α 转到位但不挪车时末端的位置
+    const p = { x: sol.h, y: S.yt };
+    const pp = P(p.x, p.y);
+    const g = P(0, 0);
+
+    ctx.save();
+    ctx.setLineDash([4, 5]);
+    ctx.strokeStyle = 'rgba(63,154,85,.42)';
+    ctx.lineWidth = 1.3;
+    line(g[0], g[1], pp[0], pp[1]);
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(pp[0], pp[1], 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.strokeStyle = '#3f9a55';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    tag('只转臂能到', pp[0] + 12, pp[1] + 4, '#3f8f50', 11, 'left');
+
+    // d：沿 x 的差额，靠挪车补。尺寸线画在目标外侧（沿 y 让开）
+    if (Math.abs(sol.d) > 6) {
+      const yd = dDimY();
+      const a = P(p.x, yd), b = P(S.xt, yd);
+      const ta = P(p.x, S.yt), tb = P(S.xt, S.yt);
+      ctx.save();
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = 'rgba(232,145,43,.45)';
+      ctx.lineWidth = 1;
+      line(ta[0], ta[1], a[0], a[1]);
+      line(tb[0], tb[1], b[0], b[1]);
+      ctx.restore();
+      arrow(a[0], a[1], b[0], b[1], '#e8912b', 2);
+      arrow(b[0], b[1], a[0], a[1], '#e8912b', 2);
+      const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+      tag('靠挪车补 d = ' + sol.d.toFixed(1) + ' mm',
+          mx + (S.yt >= 0 ? 30 : -30), my + 5, '#b06f18', 11.5,
+          S.yt >= 0 ? 'left' : 'right');
+    }
+
+    // α 弧：从 +x（画面下方）转到当前实际角度
+    if (Math.abs(S.theta) > 0.02) {
+      worldArc(S.carX, 0, 78, 0, S.theta, 'rgba(47,111,181,.6)', 1.6);
+      const mid = S.theta / 2;
+      const lp = P(S.carX + 108 * Math.cos(mid), 108 * Math.sin(mid));
+      tag('α = ' + (S.theta * 180 / Math.PI).toFixed(1) + '°',
+          lp[0], lp[1], '#2f6fb5', 11.5, 'center');
+    }
+  }
+
+  function drawTrace() {
+    if (S.trace.length < 2) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(232,145,43,.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < S.trace.length; i++) {
+      const p = P(S.trace[i].x, S.trace[i].y);
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawScaleBar() {
+    const mm = 500;
+    const px = L(mm);
+    const x0 = W - px - 26, y0 = H - 26;
+    ctx.strokeStyle = '#c2ccd8';
+    ctx.lineWidth = 1.5;
+    line(x0, y0, x0 + px, y0);
+    line(x0, y0 - 5, x0, y0 + 5);
+    line(x0 + px, y0 - 5, x0 + px, y0 + 5);
+    text(mm + ' mm', x0 + px / 2, y0 - 9, '#a9b6c6', 10.5, 'center');
+  }
+
+  // ---------------- 主绘制 ----------------
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    const sol = solve();
+    drawGrid();
+    drawReach();
+    drawCar();
+    drawFrames();
+    drawTarget();
+    drawSolution(sol);
+    drawTrace();
+    drawArm();
+    drawScaleBar();
+    drawSide();
+  }
+
+  // ---------------- 侧视：高度那一路（这里「向前」画成向右，只为好读） ----------------
+  const side = document.getElementById('side');
+  const sctx = side.getContext('2d');
+
+  function drawSide() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const r = side.getBoundingClientRect();
+    const w = Math.max(200, r.width), h = 132;
+    if (side.width !== Math.round(w * dpr)) {
+      side.width = Math.round(w * dpr);
+      side.height = Math.round(h * dpr);
+    }
+    sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sctx.clearRect(0, 0, w, h);
+
+    const groundY = h - 22;
+    const topMm = 520;
+    const sy = (groundY - 10) / topMm;
+    const yy = mm => groundY - mm * sy;
+
+    sctx.strokeStyle = '#c6d0dc';
+    sctx.lineWidth = 1.5;
+    sctx.beginPath();
+    sctx.moveTo(8, groundY);
+    sctx.lineTo(w - 8, groundY);
+    sctx.stroke();
+
+    const carH = 70;
+    sctx.fillStyle = '#dfe7f0';
+    sctx.strokeStyle = '#b3c1d1';
+    sctx.lineWidth = 1.2;
+    sctx.beginPath();
+    sctx.rect(18, yy(carH), 92, carH * sy);
+    sctx.fill();
+    sctx.stroke();
+
+    const armH = S.zt + GRIP;
+    const pivotX = 64;
+
+    sctx.fillStyle = '#8297ad';
+    sctx.fillRect(pivotX - 5, yy(armH), 10, Math.max(0, (armH - carH) * sy));
+
+    sctx.strokeStyle = '#2b3d52';
+    sctx.lineWidth = 6;
+    sctx.lineCap = 'round';
+    sctx.beginPath();
+    sctx.moveTo(pivotX, yy(armH));
+    sctx.lineTo(w - 46, yy(armH));
+    sctx.stroke();
+
+    const tX = w - 62;
+    sctx.fillStyle = 'rgba(217,74,74,.16)';
+    sctx.strokeStyle = '#d94a4a';
+    sctx.lineWidth = 1.6;
+    sctx.beginPath();
+    sctx.rect(tX, yy(S.zt), 30, Math.max(2, S.zt * sy));
+    sctx.fill();
+    sctx.stroke();
+
+    sctx.fillStyle = '#8a5a12';
+    sctx.font = '10.5px "Segoe UI","PingFang SC",sans-serif';
+    sctx.textAlign = 'left';
+    sctx.fillText('臂高 = z + ' + GRIP + ' = ' + armH.toFixed(0) + ' mm', 116, yy(armH) - 7);
+
+    sctx.fillStyle = '#a94b4b';
+    sctx.fillText('目标 z = ' + S.zt.toFixed(0), tX - 6, Math.max(12, yy(S.zt) - 5));
+  }
+
+  // ---------------- HUD / 面板 ----------------
+  const hudD = document.getElementById('hudD');
+  const hudA = document.getElementById('hudA');
+  const hudR = document.getElementById('hudR');
+  const msg = document.getElementById('msg');
+
+  function updateHud() {
+    const e = effectorWorld();
+    const res = Math.hypot(S.xt - e.x, S.yt - e.y);
+    hudD.textContent = S.carX.toFixed(1) + ' mm';
+    hudA.textContent = (S.theta * 180 / Math.PI).toFixed(1) + '°';
+    hudR.textContent = res.toFixed(1) + ' mm';
+    hudR.style.color = res < 1 ? '#3f9a55' : (res < 30 ? '#b06f18' : '#1b2430');
+  }
+
+  function setMsg(t, cls) {
+    msg.textContent = t;
+    msg.className = 'msg' + (cls ? ' ' + cls : '');
+  }
+
+  function updatePanel() {
+    const sol = solve();
+    document.getElementById('ox').textContent = S.xt.toFixed(0);
+    document.getElementById('oy').textContent = S.yt.toFixed(0);
+    document.getElementById('ol').textContent = S.l.toFixed(0);
+    document.getElementById('oz').textContent = S.zt.toFixed(0);
+
+    const eqA = document.getElementById('eqA');
+    const eqD = document.getElementById('eqD');
+    const eqH = document.getElementById('eqH');
+
+    if (sol.ok) {
+      eqA.innerHTML = 'asin(' + S.yt.toFixed(0) + ' / ' + S.l.toFixed(0) + ') = ' +
+        sol.asin.toFixed(4) + '  →  <b>' + sol.alphaDeg.toFixed(1) + '°</b>';
+      eqD.innerHTML = S.xt.toFixed(1) + ' − ' + S.l.toFixed(0) + '·cos(' +
+        sol.alphaDeg.toFixed(1) + '°) = ' + S.xt.toFixed(1) + ' − ' +
+        sol.h.toFixed(1) + '  →  <b>' + sol.d.toFixed(1) + ' mm</b>';
+    } else {
+      eqA.innerHTML = '<b style="color:#c03a3a">无解</b>';
+      eqD.innerHTML = '—';
+    }
+    eqH.innerHTML = S.zt.toFixed(0) + ' + ' + GRIP + '  →  <b>' +
+      (S.zt + GRIP).toFixed(0) + ' mm</b>';
+  }
+
+  function evaluateMessage(sol) {
+    if (!sol.ok) { setMsg(sol.reason, 'bad'); return; }
+    const dir = sol.d >= 0 ? '前进' : '倒退';
+    let m = '可解：车' + dir + ' ' + Math.abs(sol.d).toFixed(1) +
+      ' mm，臂转 ' + sol.alphaDeg.toFixed(1) + '°，臂抬到 ' +
+      (S.zt + GRIP).toFixed(0) + ' mm。';
+    if (Math.abs(sol.d) > 500) {
+      m += ' 需要挪车 ' + Math.abs(sol.d).toFixed(0) + ' mm，超出常规行程，请确认是否可以。';
+      setMsg(m, 'warn');
+      return;
+    }
+    if (sol.sweeps) {
+      m += ' 臂已摆过 90°，会扫过车身，机械上大概不可行。';
+      setMsg(m, 'warn');
+      return;
+    }
+    setMsg(m, 'ok');
+  }
+
+  // ---------------- 动画 ----------------
+  let raf = null;
+  function stopAnim() { if (raf) { cancelAnimationFrame(raf); raf = null; } }
+
+  function reset() {
+    stopAnim();
+    S.phase = 'idle';
+    S.carX = 0;
+    S.theta = 0;
+    S.trace = [];
+    const sol = solve();
+    updateView(sol.ok ? sol.d : 0);
+    draw();
+    updateHud();
+    updatePanel();
+    evaluateMessage(sol);
+  }
+
+  function run() {
+    const sol = solve();
+    evaluateMessage(sol);
+    stopAnim();
+    if (!sol.ok) return;
+    S.phase = 'run';
+    S.carX = 0;
+    S.theta = 0;
+    S.trace = [];
+    updateView(sol.d);
+
+    const t0 = performance.now();
+    const dur = 1150;
+
+    function frame(now) {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      S.carX = sol.d * e;
+      S.theta = sol.alpha * e;
+      S.trace.push(effectorWorld());
+      draw();
+      updateHud();
+      if (p < 1) {
+        raf = requestAnimationFrame(frame);
+      } else {
+        raf = null;
+        S.phase = 'done';
+        S.carX = sol.d;
+        S.theta = sol.alpha;
+        draw();
+        updateHud();
+        const e2 = effectorWorld();
+        setMsg('完成：末端已压到目标上，残差 ' +
+               Math.hypot(S.xt - e2.x, S.yt - e2.y).toFixed(1) + ' mm。', 'ok');
+      }
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  // ---------------- 交互 ----------------
+  [['rx', 'xt', 'ox'], ['ry', 'yt', 'oy'],
+   ['rl', 'l', 'ol'], ['rz', 'zt', 'oz']].forEach(function (it) {
+    const el = document.getElementById(it[0]);
+    el.addEventListener('input', function () {
+      S[it[1]] = parseFloat(el.value);
+      reset();
+    });
+  });
+
+  document.getElementById('back').addEventListener('change', function (e) {
+    S.branch = e.target.checked ? 'back' : 'front';
+    reset();
+  });
+  document.getElementById('run').addEventListener('click', run);
+  document.getElementById('reset').addEventListener('click', reset);
+
+  // 拖动目标点：屏幕 → 世界（x 由竖向位置给出，y 由横向位置给出）
+  let dragging = false;
+  function toWorld(ev) {
+    const r = cvs.getBoundingClientRect();
+    const px = ev.clientX - r.left, py = ev.clientY - r.top;
+    return {
+      x: VIEW_CX + (py - oy) / scale,
+      y: VIEW_CY + (px - ox) / scale
+    };
+  }
+  cvs.addEventListener('pointerdown', function (ev) {
+    const r = cvs.getBoundingClientRect();
+    const t = P(S.xt, S.yt);
+    if (Math.hypot(ev.clientX - r.left - t[0], ev.clientY - r.top - t[1]) < 28) {
+      dragging = true;
+      cvs.setPointerCapture(ev.pointerId);
+      stopAnim();
+      S.carX = 0; S.theta = 0; S.trace = []; S.phase = 'idle';
+    }
+  });
+  cvs.addEventListener('pointermove', function (ev) {
+    if (!dragging) return;
+    const w = toWorld(ev);
+    S.xt = Math.max(-150, Math.min(950, Math.round(w.x / 5) * 5));
+    S.yt = Math.max(-200, Math.min(750, Math.round(w.y / 5) * 5));
+    document.getElementById('rx').value = S.xt;
+    document.getElementById('ry').value = S.yt;
+    draw();
+    updateHud();
+    updatePanel();
+    evaluateMessage(solve());
+  });
+  cvs.addEventListener('pointerup', function () { dragging = false; });
+  cvs.addEventListener('pointercancel', function () { dragging = false; });
+
+  // ---------------- 启动 ----------------
+  fit();
+  reset();
+  window.addEventListener('resize', function () { fit(); draw(); });
+})();
+</script>
+</body>
+</html>
