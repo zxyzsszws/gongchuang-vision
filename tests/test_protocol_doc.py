@@ -110,8 +110,9 @@ def test_command_table_matches_implementation(doc_text):
 
 
 def test_retired_commands_are_all_listed(doc_text):
-    rows = _table(doc_text, "下列命令一律**不再使用**")
-    listed = {int(r[0], 16) for r in rows}
+    """保留命令码以空格分隔的一行列出，不能再出现「原含义」这类旧版对照表。"""
+    sec = doc_text.split("下列命令码为保留值", 1)[1].split("表 1-6", 1)[0]
+    listed = {int(tok, 16) for tok in re.findall(r"0x[0-9A-Fa-f]{4}", sec)}
     assert listed == set(P.RETIRED_CMDS), (
         f"文档与 RETIRED_CMDS 不一致：文档多 {listed - set(P.RETIRED_CMDS)}，"
         f"实现多 {set(P.RETIRED_CMDS) - listed}")
@@ -293,24 +294,91 @@ def test_colour_unknown_is_zero():
     assert P.COLOR_UNKNOWN == 0
 
 
-# ---------- 6. V2.2.0 的规则必须写清楚 ----------
+# ---------- 6. 文档必须当成第一次交给对方的契约来写 ----------
 
-def test_no_heartbeat_and_no_done_are_documented(doc_text):
-    assert "心跳" in doc_text
-    assert "done" in doc_text
-    # 明确写了「取消 done」，不能留一个需要电控等 done 的句子
-    assert "不需要再发任何东西" in doc_text or "已取消" in doc_text
+def test_doc_has_no_version_comparison(doc_text):
+    """文档要能直接交给没接触过历史版本的人，不能出现与旧版对照的内容。
+
+    与旧版对照的写法（「取消心跳」「并入 0x0006」「V2.1.0 的位域」）会让读者
+    以为自己在读变更说明，从而去找那份不存在的旧契约。这里直接禁止。
+    """
+    banned = ["V2.0.0", "V2.1.0", "修改日志", "上一版", "已作废",
+              "取消", "并入", "改为", "原含义", "不再使用"]
+    hits = [w for w in banned if w in doc_text]
+    assert not hits, f"文档里还有与旧版对照的内容：{hits}"
 
 
-def test_no_periodic_report_is_documented(doc_text):
-    assert "取消了一切主动上报" in doc_text or "取消全部周期上报" in doc_text
-    assert "50ms" not in doc_text.split("## 1.4", 1)[0], \
-        "正文里不该再有 20Hz/50ms 的周期上报说法"
+def test_doc_states_visual_never_reports_on_its_own(doc_text):
+    """「只应答、不主动发」是本协议的核心，必须正面写清。"""
+    assert "不主动上报任何东西" in doc_text
+    assert "电控发来请求才回一帧" in doc_text
+    # 没有心跳这类周期性机制
+    assert "心跳" not in doc_text
+    assert "50ms" not in doc_text
+
+
+def test_doc_has_no_done_frame(doc_text):
+    """一次往返就结束，文档里不该出现需要电控再确认的 done 概念。"""
+    assert "done" not in doc_text
+    assert "执行完即结束，不需要回任何帧" in doc_text
 
 
 def test_only_the_master_resends(doc_text):
     assert "只有电控会重发" in doc_text
     assert "视觉不重发任何帧" in doc_text or "它不重发任何帧" in doc_text
+
+
+def test_resend_rules_are_shown_as_a_sequence_diagram(doc_text):
+    """重发规则靠时序图讲比靠文字讲清楚，图里的 seq 必须自洽。"""
+    sec = doc_text.split("### 二、重发规则", 1)[1].split("### 三、", 1)[0]
+    assert "```mermaid" in sec
+    assert "sequenceDiagram" in sec
+    assert "echo_seq=14" in sec
+    assert "seq 仍为 14" in sec
+
+
+def test_each_task_has_a_sequence_diagram(doc_text):
+    """三条任务的时序各有一张 mermaid 图，且画对了参与者与结束条件。
+
+    时序图是这一节的主要内容；图丢了或写坏了，读者只能回去读散落的文字。
+    """
+    sec = doc_text.split("## 1.5 三条任务的时序", 1)[1].split("## 1.6", 1)[0]
+    blocks = re.findall(r"```mermaid\n(.*?)```", sec, re.S)
+    assert len(blocks) == 3, f"1.5 节应有 3 张时序图，实际 {len(blocks)} 张"
+
+    for task, block in zip((P.TASK_SCAN, P.TASK_TURNTABLE, P.TASK_ALIGN),
+                           blocks):
+        assert "sequenceDiagram" in block, f"任务 {task} 的图不是时序图"
+        assert "0x0010" in block, f"任务 {task} 的图缺请求帧"
+        assert "0x0011" in block, f"任务 {task} 的图缺结果帧"
+        assert "echo_seq" in block, f"任务 {task} 的图没体现 echo_seq"
+        assert f"任务码={task}" in block, f"任务 {task} 的图任务码写错"
+
+    # 每条任务在图上都要有「成功」与至少一种「失败」分支
+    for i, block in enumerate(blocks, 1):
+        assert "ST_OK" in block, f"第 {i} 张图没有成功分支"
+        assert ("ST_NOT_READY" in block or "ST_UNSOLVABLE" in block), \
+            f"第 {i} 张图没有失败分支"
+
+
+def test_sequence_diagrams_are_well_formed(doc_text):
+    """粗查 mermaid 语法：参与者声明齐全、没有空行截断、箭头行不悬空。"""
+    blocks = re.findall(r"```mermaid\n(.*?)```", doc_text, re.S)
+    assert blocks
+    for i, block in enumerate(blocks, 1):
+        lines = [ln.rstrip() for ln in block.splitlines() if ln.strip()]
+        assert lines[0].strip() == "sequenceDiagram", \
+            f"第 {i} 张图第一行必须是 sequenceDiagram"
+        participants = {ln.split()[1] for ln in lines
+                        if ln.strip().startswith("participant ")}
+        assert participants, f"第 {i} 张图没声明参与者"
+        for ln in lines[1:]:
+            s = ln.strip()
+            if "->>" in s or "-->>" in s:
+                # 箭头左侧必须是已声明的参与者
+                left = re.split(r"-{1,2}>>", s, 1)[0].strip()
+                assert left in participants, \
+                    f"第 {i} 张图的箭头起点 {left!r} 不是已声明的参与者"
 
 
 def test_dedup_key_is_the_triple(doc_text):
@@ -341,11 +409,13 @@ def test_timing_table_matches_config(doc_text):
         assert str(value) in text, f"时序表里 {key} 的值不是 {value}"
 
 
-def test_doc_states_only_two_coordinate_systems(doc_text):
-    """V2.2.0 只剩电机坐标系；场地/车身坐标系都要明确说已无对应字段。"""
-    sec = doc_text.split("附录二：坐标系与角度约定", 1)[1]
-    assert "电机坐标系" in sec
-    assert "场地坐标系与车身坐标系在本版本已无对应字段" in sec
+def test_appendix_defines_only_the_motor_frame(doc_text):
+    """任务码 3 只用电机坐标系；附录二只该定义这一个坐标系。"""
+    sec = doc_text.split("附录二：坐标系与角度约定", 1)[1].split("# 附录三", 1)[0]
+    assert "一、电机坐标系" in sec
+    # 不应再出现其他坐标系的定义
+    assert "场地坐标系" not in sec
+    assert "车身坐标系" not in sec
 
 
 def test_arm_geometry_is_documented(doc_text):
