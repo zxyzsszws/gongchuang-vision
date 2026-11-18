@@ -1,4 +1,4 @@
-"""串口帧编解码（帧布局见 `docs/protocol-v2.0.0.md` 表 1-2~1-4）。
+"""串口帧编解码（帧布局见 `docs/protocol-v2.1.0.md` 表 1-2~1-4）。
 
 帧结构：
 
@@ -38,15 +38,20 @@ MAX_DATA_LENGTH = MIN_DATA_LENGTH + MAX_DATA_LEN
 
 # ---------- 命令码（对应文档「表 1-5 命令码 ID 一览」） ----------
 # 0x00xx：视觉单元 → 机器人主控；0x02xx 保留给反向。
-CMD_HEARTBEAT = 0x0001
+# V2.1.0 取消了心跳：周期性帧（位姿、转盘）本身就是链路活跃的信号，
+# 而真正依赖往返的只有「臂解算」这一处，那一处用应答超时 + 重试兜底。
 CMD_TASK_PLAN = 0x0002
 CMD_POSE = 0x0003
 CMD_TURNTABLE = 0x0004
 CMD_REGION = 0x0005
-CMD_ACK = 0x0007
+CMD_ARM_STATE = 0x0006      # 电控→视觉：臂状态（l、h、α）
+CMD_ACK = 0x0007            # 双向：应答 / done
+CMD_ARM_SOLUTION = 0x0008   # 视觉→电控：解算结果（d、α）
 
-# v2.0.0 起不再使用：收到应静默丢弃并计数，不得视为错误。
-RETIRED_CMDS = frozenset({0x0201, 0x0202, 0x0203})
+# 不再使用：收到应静默丢弃并计数，不得视为错误。
+#   0x0001 —— V2.1.0 取消心跳
+#   0x0201/0x0202/0x0203 —— V2.0.0 已删除（主控上报位姿 / 主控状态 / 动作完成）
+RETIRED_CMDS = frozenset({0x0001, 0x0201, 0x0202, 0x0203})
 
 # 去向提示取值（文档「表 1-10」）
 REGION_MATERIAL = 1     # 原料区（转盘）
@@ -57,13 +62,23 @@ REGION_START = 4        # 起点
 # 各命令的 data 长度（字节）。文档「表 1-5」的「数据段长度」列与此一致，
 # 由 tests/test_protocol_doc.py 双向对账。
 DATA_LEN = {
-    CMD_HEARTBEAT: 0,
     CMD_TASK_PLAN: 16,
     CMD_POSE: 9,
     CMD_TURNTABLE: 16,
     CMD_REGION: 1,
-    CMD_ACK: 1,
+    CMD_ARM_STATE: 7,
+    CMD_ACK: 2,
+    CMD_ARM_SOLUTION: 10,
 }
+
+# 需要应答的帧：其余帧是周期测量或单向提示，不应答。
+# 0x0006 的应答就是 0x0008（业务帧即应答），所以它不在这里。
+EXPECTS_ACK = frozenset({CMD_TASK_PLAN, CMD_ARM_SOLUTION})
+
+# 0x0007 的结果字节
+ACK_OK = 0          # 收到并执行完
+ACK_DUPLICATE = 1   # 重复请求，本次不再执行（原请求已执行过）
+ACK_FAILED = 2      # 收到但无法执行（数据不合法、当前状态不允许等）
 
 
 @dataclass(frozen=True)

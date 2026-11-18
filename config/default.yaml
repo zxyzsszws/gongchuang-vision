@@ -21,12 +21,11 @@ sim:
   speed_mm_s: 1200.0
   turntable_omega01: 600    # 转盘角速度，0.1°/s（600 = 60°/s，即 6s 一圈）
 
-# 时序参数（与 docs/protocol-v2.0.0.md 表 1-14 一一对应）
+# 时序参数（与 docs/protocol-v2.1.0.md 表 1-15 一一对应）
 timing:
-  heartbeat_ms: 500         # 心跳 2Hz
-  link_timeout_s: 2.0       # 超过 2s 未收到任何来帧 → 安全停止
-  ack_timeout_ms: 100       # 应答超时
-  ack_retry: 3              # 应答重试上限
+  ack_timeout_ms: 100       # 任务计划的应答超时（纯收帧，很快就能回）
+  exec_timeout_ms: 2000     # 解算帧等 done 的超时：done 在动作执行完才发
+  ack_retry: 3              # 重试上限
   pose_interval_ms: 50      # 位姿上报周期 20Hz
   turntable_interval_ms: 50 # 转盘上报周期 20Hz
   scan_timeout_s: 15        # 扫码阶段的超时

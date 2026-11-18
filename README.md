@@ -5,7 +5,7 @@
 - 视觉自己用三个同心圆参考靶解出车身在场地中的位姿，通过串口把**测量结果**发给机器人主控；
 - 视觉不规划路径、不下发目标点、不判断动作是否完成——那些全部由电控负责。
 
-- 协议文档（交电控组冻结）：[`docs/protocol-v2.0.0.md`](docs/protocol-v2.0.0.md)
+- 协议文档（交电控组冻结）：[`docs/protocol-v2.1.0.md`](docs/protocol-v2.1.0.md)
 - 设计规格：[`docs/superpowers/specs/2026-10-14-gongchuang-vision-design.md`](docs/superpowers/specs/2026-10-14-gongchuang-vision-design.md)
 
 ## 1. 环境安装
@@ -29,7 +29,7 @@
 全部 226 项测试**无需任何硬件**。覆盖范围：
 
 - 协议层：帧编解码往返、粘包/断包/坏校验、CRC 与数据手册对齐；
-- 文档对账：`docs/protocol-v2.0.0.md` 的表 1-2~1-5、命令长度、字节级样例必须与实现逐项一致；
+- 文档对账：`docs/protocol-v2.1.0.md` 的表 1-2~1-5、命令长度、字节级样例必须与实现逐项一致；
 - 算法层：三点解位姿、180° 镜像歧义消解、同心圆检出（轮廓法 + 充满度 + 去重）；
 - 任务计划：二维码四组数字的分组规则、按颜色配对算第二批暂存区靶号；
 - 端到端：MockMcu 带里程漂移 → 视觉看见靶 → 电控估计误差清零；
@@ -55,19 +55,42 @@ python -m src.main --config config/default.yaml --mode sim|replay|live [--max-se
 
 ## 4. 通信要点（细节见协议文档）
 
-视觉 → 电控共 5 条：
+视觉 → 电控共 4 条：
 
 | 命令码 | 名称 | 长度 | 何时发 |
 |---|---|---|---|
-| `0x0001` | 心跳 | 0B | 每 500ms，与有无测量结果无关 |
 | `0x0002` | 任务计划 | 16B | 扫码成功后发一次，必须得到应答 |
 | `0x0003` | 车体位姿 | 9B | 每 50ms，仅当当前区域三个靶都可见 |
 | `0x0004` | 转盘模型 | 16B | 每 50ms，仅当转盘可见 |
-| `0x0007` | 应答 | 1B | 收到任意帧后回 `ack_seq` |
+| `0x0008` | 臂解算结果 | 10B | 收到 `0x0006` 后立即回 |
 
-电控 → 视觉只有 1 条：`0x0005` 去向提示（1B）。两组三靶结构完全相同，没有这个提示视觉无法判断画面属于哪一组。
+电控 → 视觉共 2 条：
 
-`0x0201`/`0x0202`/`0x0203`（位姿上报、校准修正、动作完成）在 v2.0.0 已删除，收到静默丢弃。
+| 命令码 | 名称 | 长度 | 何时发 |
+|---|---|---|---|
+| `0x0005` | 去向提示 | 1B | 目标区域改变时发一次 |
+| `0x0006` | 臂状态 | 7B | 请求解算时发，发后必须静止 |
+
+双向 1 条：`0x0007` 应答（2B，`ack_seq` + 结果字节），既是任务计划的应答，也是解算的 done。
+
+**只有两类帧需要应答**：任务计划（等 `0x0007`）与臂解算（`0x0006` 由 `0x0008` 应答，`0x0008` 由 `0x0007` 应答）。位姿、转盘、去向提示一律不应答——它们每 50ms 一帧，每帧都回 ack 会让一半带宽变成纯应答帧。
+
+**本版本没有心跳**。周期测量帧本身就是链路活跃的证据；而电控是事件驱动的，停着作业时可能十几秒不发一帧，把静默当断链只能得到误报。
+
+`0x0001`（心跳）与 `0x0201`/`0x0202`/`0x0203`（位姿上报、校准修正、动作完成）均已删除，收到静默丢弃。
+
+### 机械臂目标解算
+
+相机装在机械臂末端、正对地面。电控先发 `0x0006`（伸出长度 l、相机高度 h、臂 yaw α、目标编号），视觉据此把像素换算到**电机坐标系**（原点在车身右侧边中点即臂转轴，+x 沿车头，+y 朝车身外），读出目标点 (x, y) 后解：
+
+```
+α = asin(y / l)          横向只能靠臂转出来
+d = x − l·cos α          前后靠车沿自身 x 挪
+```
+
+`d` 是**相对当前位置**的移动量。伸出长度比赛中固定死，所以「够不着」只能靠挪车补；`|y| > l` 时明确报「横向够不着」（状态字节 bit0~1 = 1），不钳位——钳位会给出一个「看起来能到、实际差一截」的答案。
+
+`0x0008` 带回 `echo_seq`（对应 `0x0006` 的 seq）。电控必须按它去重：同一个 `echo_seq` 只执行一次，否则视觉因等不到 done 而重发时，车会沿同一个 `d` 走两遍——这类错误不报错，只表现为位置错。
 
 ### 位姿是怎么解出来的
 
@@ -87,7 +110,7 @@ python -m src.main --config config/default.yaml --mode sim|replay|live [--max-se
 | `serial` | `port`（如 COM3 / `/dev/ttyTHS1`）、`baudrate`（默认 115200） |
 | `camera_calib_file` | 相机外参（像素→车身毫米），**live/replay 必填**，见下节 |
 | `sim` | `drift_mm_per_m` 里程漂移率、`drift_deg_per_m` 航向缓漂率、`jitter_mm` 观测抖动、`speed_mm_s` 行驶速度、`turntable_omega01` 转盘角速度（0.1°/s 为单位，600 = 60°/s 即 6 秒一圈） |
-| `timing` | 与协议表 1-14 一一对应：`heartbeat_ms`、`link_timeout_s`、`ack_timeout_ms`、`ack_retry`、`pose_interval_ms`、`turntable_interval_ms`、`scan_timeout_s` |
+| `timing` | 与协议表 1-15 一一对应：`ack_timeout_ms`、`exec_timeout_ms`、`ack_retry`、`pose_interval_ms`、`turntable_interval_ms`、`scan_timeout_s` |
 | `target` | 同心圆检出参数：`search_radius` 半径搜索范围（像素）、`cluster_tol_px` 聚类容差、`min_rings` 至少几圈才认作靶、`min_circularity` 圆度门限、`min_fill` 充满度门限、`same_radius_ratio`/`dedup_px` 去重、`max_match_mm` 选靶允许的预测偏差、`threshold_block`/`threshold_c` 自适应阈值 |
 | `color` | `min_area` 色块面积下限；`hsv_table` 1-6 号颜色的 HSV [下限,上限]（OpenCV H 范围 0-180）——**现场光照下必调** |
 | `field_file` | 场地图路径（**相对运行目录**，即在仓库根运行） |
@@ -142,7 +165,7 @@ src/core/          # ③ 调度层：crc、protocol（帧编解码）、taskplan
 src/main.py        # ④ 入口：--mode live|replay|sim
 tests/             # pytest：算法单测 + 协议/文档对账 + 端到端（sim 与合成图 live 链路）
 tools/             # calibrate_camera.py 外参标定、replay_log.py 日志复盘
-docs/              # protocol-v2.0.0.md（电控冻结文档）+ superpowers/specs 设计文档
+docs/              # protocol-v2.1.0.md（电控冻结文档；v2.0.0 保留作历史）+ superpowers/specs 设计文档
 ```
 
 两条硬性规则：算法层纯函数化（合成数据即可验证精度、不依赖真车）；MockMcu 是一等公民（电控代码就绪前即可跑通全链路，联调仅切换 `serial.port` 配置）。

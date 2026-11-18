@@ -49,12 +49,11 @@ python3 -m src.main --mode sim --max-seconds 40
 - pytest 6.2.5：**85 passed**（仅 `pythonpath` 选项警告，已由 conftest 兜底）
 - `--mode sim`：`IDLE → … → DONE`，两次 `CAL_APPLIED`，退出码 0
 
-> **⚠ 待复测（协议 v2.0.0）**：串口帧格式仍为 `A5 | data_length(2B) | seq | CRC8 |
-> cmd_id(2B) | data | CRC16`，但命令集已按 `docs/protocol-v2.0.0.md` 换掉
-> （视觉只输出测量结果，删除 0x0201/0x0202/0x0203；状态机收缩为
-> `SCANNING`/`SERVICE`/`SAFESTOP`，不再有 `DONE`，所以 sim 会一直跑到时限）。
-> 本地 Windows 全量测试 **226 passed**，`--mode sim --max-seconds 40` 得到
-> `final_state=SERVICE poses=77`、车真值坐标始终落在场地 0~1500 / 0~2000mm 内。
+> **⚠ 待复测（协议 v2.1.0）**：串口帧格式仍为 `A5 | data_length(2B) | seq | CRC8 |
+> cmd_id(2B) | data | CRC16`，但命令集已按 `docs/protocol-v2.1.0.md` 换掉：
+> 取消心跳，新增 `0x0006` 臂状态与 `0x0008` 解算结果，`0x0007` 改为带结果字节的
+> 两字节应答（兼作 done）。状态机仍是 `SCANNING`/`SERVICE`/`SAFESTOP`。
+> 本地 Windows 全量测试 **281 passed**，`--mode sim` 可跑通扫码 → 测量 → 臂往返。
 > 目标机当时不可用，**尚未在 Jetson 上复测**；下次可连时先跑
 > `python3 -m pytest -q` 与 `--mode sim` 确认，再谈串口联调。
 
@@ -70,8 +69,8 @@ python3 -m src.main --mode sim --max-seconds 40
 3. **相机外参未标定**：`camera_calib_file` 指向的仍是示例文件。现场需按
    README §6 用 `tools/calibrate_camera.py` 实测标定。
 4. **串口未接**：`serial.port` 默认 `COM3`（Windows 命名），Linux 下应为
-   `/dev/ttyTHS1` 或 `/dev/ttyUSB0` 之类，需按实际主控连接确认。**协议 v2.0.0 把
+   `/dev/ttyTHS1` 或 `/dev/ttyUSB0` 之类，需按实际主控连接确认。**协议 v2.1.0 把
    分工改为「视觉只测量、电控全权规划与控制」**，联调前须把
-   `docs/protocol-v2.0.0.md` 交电控组按新命令集实现，更早的 `AA 55 … xor 0D` 格式不再兼容。
+   `docs/protocol-v2.1.0.md` 交电控组按新命令集实现，更早的 `AA 55 … xor 0D` 格式不再兼容。
 5. **反向隧道未使用**：机器可直连 PyPI（已配 USTC 镜像），
    `ssh -R 7890:127.0.0.1:7897` 在本场景非必需。

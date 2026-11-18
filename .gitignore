@@ -6,3 +6,4 @@ tests/fixtures/imgs/
 venv/
 .pytest_cache/
 .vscode/
+.playwright-cli/

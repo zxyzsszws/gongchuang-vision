@@ -17,7 +17,7 @@ import yaml
 from src.algorithms.fieldmap import load_field_map
 from src.algorithms.types import Pose
 from src.core.fsm import MatchFSM
-from src.core.protocol import (CMD_HEARTBEAT, CMD_POSE, CMD_REGION,
+from src.core.protocol import (CMD_ARM_STATE, CMD_POSE, CMD_REGION,
                                CMD_TASK_PLAN, CMD_TURNTABLE,
                                REGION_MATERIAL, REGION_ROUGH, REGION_STAGING)
 from src.devices.link import MockMcu
@@ -95,12 +95,19 @@ def test_task_plan_bytes_match_doc_sample():
     assert plans[0] == bytes.fromhex("04 05 02 03 02 01 02 05 04 03 01 02 01 02 03 8d")
 
 
-def test_heartbeat_is_sent_periodically():
-    field, mcu, scene, fsm = _measure_fsm()
+def test_periodic_pose_frames_are_sent_without_any_ack():
+    """没有心跳：链路的活跃由周期测量帧自己证明。
+
+    只要画面里有靶，位姿就会持续发出；一帧应答都没收到也不影响。主循环 20ms
+    一拍、上报周期 50ms，实际按 60ms 节流（20 的倍数里第一个 ≥50 的），
+    所以 2 秒约 34 帧。
+    """
+    field, mcu, scene, fsm = _measure_fsm(
+        REGION_ROUGH, truth=Pose(1500.0, 1000.0, 270.0))
     for k in range(100):                 # 2 秒
         fsm.step(k * 0.02)
-    beats = [c for c in mcu.sent_cmd_ids() if c == CMD_HEARTBEAT]
-    assert len(beats) >= 4, f"2 秒内应有至少 4 次心跳，实际 {len(beats)}"
+    poses = [c for c in mcu.sent_cmd_ids() if c == CMD_POSE]
+    assert len(poses) >= 33, f"2 秒内应约 34 帧位姿，实际 {len(poses)}"
 
 
 def test_bad_qr_does_not_send_plan():

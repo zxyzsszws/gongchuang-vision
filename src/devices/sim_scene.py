@@ -29,11 +29,12 @@ QR_TEXT = "452+321+254+312"
 class SimScene:
     """合成感知：``qr`` / ``targets`` / ``turntable`` 三个可调用键。"""
 
-    KEYS = ("qr", "targets", "turntable")
+    KEYS = ("qr", "targets", "turntable", "arm_target")
 
     def __init__(self, field, qr_at_frame=3, jitter_mm=0.3, seed=42,
                  station_colors=(4, 5, 2), omega01=600, angle01=600,
-                 truth_pose=None, auto_advance=True, read_digits=False):
+                 truth_pose=None, auto_advance=True, read_digits=False,
+                 arm_target_body=None, car_width_mm=620.0):
         self.field = field
         self._qr_at = qr_at_frame
         self._sigma = jitter_mm
@@ -46,6 +47,9 @@ class SimScene:
         self.auto_advance = auto_advance
         self.read_digits = read_digits
         self.visible = True             # 测试可关掉，模拟离开靶区
+        # 相机要看的那个目标点在车身坐标系下的位置（None = 画面里没有目标）
+        self.arm_target_body = arm_target_body
+        self.arm_width_mm = car_width_mm
 
     # ---------- 坐标系变换 ----------
 
@@ -114,6 +118,23 @@ class SimScene:
         """按虚拟时钟推进转盘角度（视觉侧也要按 dt 走，才能跟上真实转动）。"""
         if self.auto_advance:
             self._angle01 = int((self._angle01 + self.omega01 * dt) % 3600)
+
+    def arm_target(self, target_id=0):
+        """相机在臂末端看下去，测到的目标点在**电机坐标系**下的位置。
+
+        机位随臂动：臂 yaw 与伸出长度一变，同一个场地目标在电机坐标系里的坐标就
+        变了。这里按真值反算——把目标点从场地系换到电机系（``_to_body`` 给的是
+        车身系，电机系只是它沿 y 平移 width/2 再按整车平移约定取反）。
+
+        测试用固定目标：``self.arm_target_body``（车身系）。没设就返回 None，
+        表示画面里没看到目标——这时视觉必须报「没测到」，不能编一个坐标出来。
+        """
+        if self.arm_target_body is None:
+            return None
+        bx, by = self.arm_target_body
+        # 车身系 → 电机系：原点在车身右边缘中点，车身在 y<0 一侧，
+        # 电机系的 y 朝车外，故取负并减去车宽一半的偏移。
+        return (bx, by + self.arm_width_mm / 2.0)
 
     def __getitem__(self, key):
         return getattr(self, key)

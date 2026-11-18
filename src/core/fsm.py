@@ -1,32 +1,38 @@
-"""MatchFSM：视觉单元的主状态机（v2.0.0 语义）。
+"""MatchFSM：视觉单元的主状态机（V2.1.0 语义）。
 
-## 与 v1.0.0 的根本区别
+## 分工
 
-v1.0.0 的视觉是「指挥官」：它规划导航、下发放置指令、用 ACK/DONE 推进流程，
-共十一个状态。v2.0.0 的视觉是**测量仪器**，它不推进任何流程、不判断任何动作
-是否完成，因此状态机收缩为两个工作状态：
+视觉是**测量仪器**，不推进流程、不判断动作是否完成：
 
     SCANNING  —— 读二维码，自检任务计划，发一次 0x0002
-    SERVICE   —— 持续测量：能看见参考靶就发位姿，能看见转盘就发转盘模型
+    SERVICE   —— 持续测量：能看见参考靶就发位姿，能看见转盘就发转盘模型，
+                 收到臂状态就回解算结果
 
-流程推进（取料、放料、码垛、回起点）全部由机器人主控负责，视觉不参与。
+取料、放料、码垛、回起点全部由机器人主控负责。
 
-## SERVICE 状态下每拍做的事
+## 为什么没有心跳
 
-1. 按心跳周期发 ``0x0001``（无论有无测量结果）。
-2. 处理来帧：``0x0005`` 切区域、``0x0007`` 清待确认槽，其余一律静默丢弃。
-3. 每 50ms：若当前区域三个参考靶都在，解位姿并发 ``0x0003``。
-4. 每 50ms：若转盘可见，发 ``0x0004``。
+周期性帧（位姿 20Hz、转盘 20Hz）本身就是链路活跃的证据，再加一层心跳是重复的。
+真正需要「确认对方收到」的只有两处往返：任务计划、臂解算。它们各有应答超时，
+超时重发、重试超限就安全停止——链路死掉一定会在这两处之一暴露出来。
 
-## 为什么「三个靶不全就不发」而不是发一个降级结果
+反过来说，**不能靠「多久没收到任何来帧」判断断链**：这个协议里电控是事件驱动的，
+停着作业时可能十几秒不发一帧，那是正常的。把静默当断链只能得到误报。
 
-只看见 1 个或 2 个靶时朝向不可观（见 ``algorithms/localize.py`` 的推导）；发出去
-的半成品位姿会让电控把车开歪，比不发更糟。宁可让电控继续用自己的里程推算。
+## 臂解算的三段往返
+
+    电控 --0x0006 臂状态--> 视觉        电控此时必须静止
+    视觉 --0x0008 解算结果--> 电控      这是对 0x0006 的应答，不是独立周期帧
+    电控 --0x0007 done--> 视觉          动作执行完之后才发
+
+任一侧没等到回应就重发**原帧（seq 不变）**。视觉重发 0x0008 时 seq 也不变，
+电控据此认出「这一帧我执行过了」，只补一个 done，不再动一次——否则车会沿着
+同一个 d 走两遍。
 
 ## 180° 镜像歧义由谁消解
 
 三个靶共线，观测顺序整体反向会得到「朝向差 180°、残差同样为 0」的另一个解，
-几何上无法区分。v2.0.0 里电控不上报位姿，所以先验只能来自视觉自己：
+几何上无法区分。先验只能来自视觉自己：
 
 1. 靶心数字识别结果（最可靠）；
 2. 上一帧解出的位姿（时间连续，车不会在一帧之间掉头）；
@@ -34,21 +40,24 @@ v1.0.0 的视觉是「指挥官」：它规划导航、下发放置指令、用 
 """
 import struct
 
+from ..algorithms.arm import ArmState, no_target_solution, solve_arm
 from ..algorithms.localize import DegenerateInput, resolve_order
-from ..core.protocol import (CMD_ACK, CMD_HEARTBEAT, CMD_POSE, CMD_REGION,
-                             CMD_TASK_PLAN, CMD_TURNTABLE, Frame)
+from ..core.protocol import (ACK_DUPLICATE, ACK_FAILED, ACK_OK, CMD_ACK,
+                             CMD_ARM_SOLUTION, CMD_ARM_STATE, CMD_POSE,
+                             CMD_REGION, CMD_TASK_PLAN, CMD_TURNTABLE,
+                             EXPECTS_ACK, Frame)
 from ..core.taskplan import TaskPlanError, build_task_plan, describe
 
 STATES = ["SCANNING", "SERVICE", "SAFESTOP"]
 
-# 位姿质量字节各位（文档「表 1-8」）
+# 位姿质量字节各位（文档「表 1-9」）
 Q_TARGETS_MASK = 0x03       # bit0~1：参与解算的靶数
 Q_SOURCE_SHIFT = 2          # bit2~3：编号来源
 Q_SCALE_AUTO = 0x10         # bit4：尺度由三点自估
 Q_GRADE_SHIFT = 5           # bit5~6：质量等级
 Q_USABLE = 0x80             # bit7：本帧可用
 
-# 编号来源（文档表 1-8 的 bit2~3）
+# 编号来源（文档表 1-9 的 bit2~3）
 SRC_DIGITS = 0       # 读到靶心上的数字
 SRC_ENTRY = 1        # 按入场方向约定推定（标称入场位姿或上一帧）
 SRC_PLAN = 2         # 与任务计划交叉核对（当前未实现，仅保留位值）
@@ -70,9 +79,25 @@ def _i16(v):
     return max(-32768, min(32767, int(round(v))))
 
 
+def _u16(v):
+    return max(0, min(65535, int(round(v))))
+
+
 def _angle01(deg):
     """角度归一到 0.1° 的有符号区间（文档附录二第二节）。"""
     return int(((deg * 10.0 + 1800) % 3600) - 1800)
+
+
+class _Pending:
+    """一个等待应答的帧。"""
+
+    __slots__ = ("frame", "deadline", "retries", "timeout")
+
+    def __init__(self, frame, deadline, timeout):
+        self.frame = frame
+        self.deadline = deadline
+        self.timeout = timeout
+        self.retries = 0
 
 
 class MatchFSM:
@@ -86,19 +111,18 @@ class MatchFSM:
         self.log_events = []
 
         self._seq = 0
-        self._last_hb = None
         self._last_pose_at = None
         self._last_tt_at = None
-        self._last_rx_at = None        # 上次收到任何来帧的时刻（断链检测）
-        self._deadline = None          # 待确认帧的重发截止时刻
-        self._pending = None           # (seq, frame) 等待 ACK 的那一帧
-        self._retries = 0              # 当前待确认帧已重发次数
-        self._region = None            # 当前去向提示；None 表示尚未收到
-        self._last_pose = None         # 上一帧解出的位姿（消解 180° 歧义用）
-        self._plan = None              # TaskPlan
+        self._pending = {}              # cmd_id -> _Pending
+        self._region = None             # 当前去向提示；None 表示尚未收到
+        self._last_pose = None           # 上一帧解出的位姿（消解 180° 歧义用）
+        self._plan = None                # TaskPlan
         self._pose_sent = 0
         self._turntable_sent = 0
+        self._solution_sent = 0
         self._plan_rejected = 0
+        self._arm_seen_seq = None        # 上一次处理过的 0x0006 的 seq
+        self._arm_state = None           # 最近一次收到的臂状态
 
     # ---------- 基础设施 ----------
 
@@ -106,51 +130,48 @@ class MatchFSM:
         self._seq = self._seq % 255 + 1     # 1..255，0 不使用（文档表 1-4）
         return self._seq
 
-    def _send(self, cmd_id, data=b"", now=0.0, expect_ack=True):
-        """发一帧。``expect_ack`` 为真且此前有待确认帧时返回 False（不覆盖）。"""
-        if expect_ack and self._pending is not None:
+    def _send(self, cmd_id, data=b"", now=0.0, expect_ack=False,
+              timeout_key="ack_timeout_ms"):
+        """发一帧。``expect_ack`` 为真时登记待确认槽（同一命令不重复登记）。"""
+        if expect_ack and cmd_id in self._pending:
             return False
         frame = Frame(self._next_seq(), cmd_id, data)
         self.link.send(frame)
         if expect_ack:
-            self._pending = (frame.seq, frame)
-            self._deadline = now + self.cfg["timing"]["ack_timeout_ms"] / 1000.0
+            timeout = self.cfg["timing"][timeout_key] / 1000.0
+            self._pending[cmd_id] = _Pending(frame, now + timeout, timeout)
         return True
 
-    def _heartbeat(self, now):
-        interval = self.cfg["timing"]["heartbeat_ms"] / 1000.0
-        if self._last_hb is None or now - self._last_hb >= interval:
-            self._last_hb = now
-            self.link.send(Frame(self._next_seq(), CMD_HEARTBEAT))
-            # 心跳不占用待确认槽：它是周期帧，重发会与下一拍心跳撞车
+    def _resend(self, cmd_id, now):
+        """原样重发待确认帧（seq 不变），并顺延截止时刻。"""
+        p = self._pending.get(cmd_id)
+        if p is None:
+            return False
+        self.link.send(p.frame)
+        p.deadline = now + p.timeout
+        p.retries += 1
+        return True
 
-    def _check_ack(self, now):
-        """待确认帧的应答超时处理：重发原帧（seq 不变），超限进安全停止。"""
-        if self._pending is None or self._deadline is None:
-            return
-        if now < self._deadline:
-            return
-        timeout = self.cfg["timing"]["ack_timeout_ms"] / 1000.0
-        limit = self.cfg["timing"]["ack_retry"]
-        _seq, frame = self._pending
-        if self._retries >= limit:
-            self.log_events.append(("ACK_TIMEOUT", frame.cmd_id, now))
-            self._pending = self._deadline = None
-            self._goto("SAFESTOP", now)
-            return
-        self.link.send(frame)       # 重发原帧，seq 不变
-        self._retries += 1
-        self._deadline = now + timeout
+    def _check_acks(self, now):
+        """应答超时：重发原帧，超过重试上限则安全停止（文档表 1-15）。
 
-    def _check_link(self, now):
-        """断链检测（文档表 1-14）：超过 2s 未收到任何来帧则安全停止。"""
-        if self._last_rx_at is None:
-            return
-        limit = self.cfg["timing"]["link_timeout_s"]
-        if now - self._last_rx_at > limit:
-            self.log_events.append(("LINK_TIMEOUT", round(now - self._last_rx_at, 2),
-                                    now))
-            self._goto("SAFESTOP", now)
+        ``CMD_ARM_SOLUTION`` 等的是 done，而 done 在动作**执行完**才发，所以它
+        用自己的超时（``exec_timeout_ms``），比纯收帧的应答超时长得多。
+        """
+        limit = int(self.cfg["timing"]["ack_retry"])
+        for cmd_id in list(self._pending):
+            p = self._pending[cmd_id]
+            if now < p.deadline:
+                continue
+            if p.retries >= limit:
+                self.log_events.append(("ACK_TIMEOUT", cmd_id, now))
+                del self._pending[cmd_id]
+                self._goto("SAFESTOP", now)
+                return
+            self.link.send(p.frame)
+            p.retries += 1
+            p.deadline = now + p.timeout
+        # 循环里可能已进 SAFESTOP
 
     def _goto(self, state, now):
         self.log_events.append((self.state, "->", state, now))
@@ -159,23 +180,46 @@ class MatchFSM:
 
     def _drain(self, now):
         while (f := self.link.poll()) is not None:
-            self._last_rx_at = now
             if f.cmd_id == CMD_ACK:
-                if self._pending is not None and f.data \
-                        and f.data[0] == self._pending[0]:
-                    self._pending = None
-                    self._retries = 0
+                self._on_ack(f, now)
             elif f.cmd_id == CMD_REGION:
-                if len(f.data) != 1:
-                    self.log_events.append(("BAD_REGION_LEN", len(f.data), now))
-                    continue
-                if f.data[0] != self._region:
-                    # 换区域后上一帧的位姿不再是有效的先验（两组靶相距很远），
-                    # 必须丢掉，改用新区域的标称入场位姿消解 180° 歧义。
-                    self._last_pose = None
-                self._region = f.data[0]
-                self.log_events.append(("REGION", self._region, now))
-            # 其余命令（含已废弃的 0x0201/0x0202/0x0203）静默丢弃
+                self._on_region(f, now)
+            elif f.cmd_id == CMD_ARM_STATE:
+                self._on_arm_state(f, now)
+            # 其余命令（含已废弃的 0x0001/0x0201/0x0202/0x0203）静默丢弃
+
+    def _on_region(self, f, now):
+        if len(f.data) != 1:
+            self.log_events.append(("BAD_REGION_LEN", len(f.data), now))
+            return
+        if f.data[0] != self._region:
+            # 换区域后上一帧的位姿不再是有效的先验（两组靶相距很远），
+            # 必须丢掉，改用新区域的标称入场位姿消解 180° 歧义。
+            self._last_pose = None
+        self._region = f.data[0]
+        self.log_events.append(("REGION", self._region, now))
+
+    def _on_ack(self, f, now):
+        """0x0007：ack_seq + result 两字节。"""
+        if len(f.data) != 2:
+            self.log_events.append(("BAD_ACK_LEN", len(f.data), now))
+            return
+        ack_seq, result = f.data
+        for cmd_id in list(self._pending):
+            p = self._pending[cmd_id]
+            if p.frame.seq != ack_seq:
+                continue
+            del self._pending[cmd_id]
+            if result == ACK_OK or result == ACK_DUPLICATE:
+                self.log_events.append(("ACK", cmd_id, result, now))
+            elif result == ACK_FAILED:
+                self.log_events.append(("NACK", cmd_id, now))
+                # 任务计划被拒说明双方对不上，继续扫也扫不出别的码，直接停。
+                if cmd_id == CMD_TASK_PLAN:
+                    self._goto("SAFESTOP", now)
+            else:
+                self.log_events.append(("ACK_UNKNOWN_RESULT", result, now))
+            return
 
     def _due(self, last, now, key):
         """周期门控：距上次发送是否已到间隔。
@@ -192,13 +236,11 @@ class MatchFSM:
     # ---------- 主循环 ----------
 
     def step(self, now):
-        if self.state in ("SAFESTOP",):
+        if self.state == "SAFESTOP":
             return self.state
-        self._heartbeat(now)
         self.link.tick(now)
         self._drain(now)
-        self._check_link(now)
-        if self.state in ("SAFESTOP",):
+        if self.state == "SAFESTOP":
             return self.state
         getattr(self, "_s_" + self.state)(now)
         return self.state
@@ -218,7 +260,8 @@ class MatchFSM:
                 if not plan.usable:
                     self._plan_rejected += 1
                     self.log_events.append(("PLAN_UNUSABLE", describe(plan), now))
-                elif self._send(CMD_TASK_PLAN, plan.to_bytes(), now):
+                elif self._send(CMD_TASK_PLAN, plan.to_bytes(), now,
+                                expect_ack=True):
                     self._plan = plan
                     self.log_events.append(("PLAN_SENT", describe(plan), now))
                     self._goto("SERVICE", now)
@@ -230,7 +273,7 @@ class MatchFSM:
     # ---------- SERVICE ----------
 
     def _s_SERVICE(self, now):
-        self._check_ack(now)
+        self._check_acks(now)
         if self.state == "SAFESTOP":
             return
         if self._due(self._last_pose_at, now, "pose_interval_ms"):
@@ -325,6 +368,63 @@ class MatchFSM:
         self._send(CMD_TURNTABLE, data, now, expect_ack=False)
         self._last_tt_at = now
         self._turntable_sent += 1
+
+    # ---------- 臂解算 ----------
+
+    def _arm_target_getter(self):
+        """取 perceive 里的臂目标测量入口（sim 与 live 都按这个键提供）。
+
+        ``perceive`` 是 dict 或带 ``__getitem__`` 的对象，两种都要支持：
+        ``SimScene`` 用 ``__getitem__``，单元测试里常用裸 dict。
+        """
+        try:
+            return self.perceive["arm_target"]
+        except (KeyError, TypeError, IndexError):
+            return None
+
+    def _on_arm_state(self, f, now):
+        """收到 0x0006：解算并回 0x0008。
+
+        电控重发同一个 seq 说明它没收到上一帧解算结果（或者等 done 超时了），
+        此时**原样重发**上一帧 0x0008 而不是重新解算：电控必须静止，重算的结果
+        应当相同，但重发原帧能保证逐字节一致，电控的重复识别也更简单。
+        """
+        if len(f.data) != 7:
+            self.log_events.append(("BAD_ARM_LEN", len(f.data), now))
+            return
+
+        if self._arm_seen_seq == f.seq and CMD_ARM_SOLUTION in self._pending:
+            self._resend(CMD_ARM_SOLUTION, now)
+            self.log_events.append(("ARM_RESEND", f.seq, now))
+            return
+
+        l_mm, h_mm, alpha01, target_id = struct.unpack("<HHHb", f.data)
+        state = ArmState(l_mm=float(l_mm), h_mm=float(h_mm),
+                         alpha_deg=alpha01 / 10.0, seq=f.seq)
+        self._arm_state = state
+        self._arm_seen_seq = f.seq
+
+        getter = self._arm_target_getter()
+        measured = getter(target_id) if getter is not None else None
+
+        if measured is None:
+            sol = no_target_solution(echo_seq=f.seq)
+            self.log_events.append(("ARM_NO_TARGET", f.seq, now))
+        else:
+            sol = solve_arm(measured, state.l_mm, echo_seq=f.seq,
+                            grade=GRADE_GOOD)
+            self.log_events.append(("ARM_SOLVED", round(sol.d_mm, 2),
+                                    round(sol.alpha_deg, 3), f.seq, now))
+
+        data = struct.pack("<hhBBhh", _i16(sol.d_mm),
+                           _angle01(sol.alpha_deg) & 0xFFFF, sol.status,
+                           f.seq & 0xFF, _i16(sol.target[0]),
+                           _i16(sol.target[1]))
+        # 电控可能正忙（上一帧解算还在等 done）。此时不覆盖，让它先把上一轮走完；
+        # 电控等不到 done 会重发，届时重新解算即可。
+        if self._send(CMD_ARM_SOLUTION, data, now, expect_ack=True,
+                      timeout_key="exec_timeout_ms"):
+            self._solution_sent += 1
 
     # ---------- 终态 ----------
 

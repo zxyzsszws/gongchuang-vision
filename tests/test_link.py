@@ -1,8 +1,10 @@
-"""MockMcu / 链路层测试（v2.0.0 语义）。
+"""MockMcu / 链路层测试（V2.1.0 语义）。
 
-v2.0.0 里机器人主控只做三件事：回应答、发去向提示、按自己的里程推算行驶。
-它**不向视觉上报位姿**，因此这里测的是「ACK 正确」「区域提示按路线发出」
-「里程漂移真的会累积」「应用视觉位姿后误差归零」。
+V2.1.0 里机器人主控做的事：按自己规划行驶、发去向提示、收位姿后整体替换估计、
+主动索取臂解算。它**不向视觉上报位姿**，**不发心跳**。
+
+这里测重点是「哪些帧该回应答、哪些不该」以及臂往返的 `seq` 语义——这两处写错
+在真机上表现为「莫名其妙地重发」或「同一个动作执行两遍」，都不容易现场定位。
 """
 import math
 import struct
@@ -10,9 +12,11 @@ import sys
 
 import pytest
 
-from src.core.protocol import (CMD_ACK, CMD_POSE, CMD_REGION, CMD_TASK_PLAN,
-                               REGION_MATERIAL, REGION_ROUGH, REGION_STAGING,
-                               REGION_START, Frame)
+from src.core.protocol import (ACK_DUPLICATE, ACK_FAILED, ACK_OK,
+                               CMD_ACK, CMD_ARM_SOLUTION, CMD_ARM_STATE,
+                               CMD_POSE, CMD_REGION, CMD_TASK_PLAN,
+                               CMD_TURNTABLE, REGION_MATERIAL, REGION_ROUGH,
+                               REGION_STAGING, REGION_START, Frame)
 from src.devices.link import MockMcu
 
 
@@ -23,27 +27,54 @@ def _drain(m):
     return frames
 
 
-def test_ack_on_every_frame():
+def _ack(m):
+    return [f for f in _drain(m) if f.cmd_id == CMD_ACK]
+
+
+def _plan(seq=1):
+    return Frame(seq=seq, cmd_id=CMD_TASK_PLAN, data=b"\x00" * 16)
+
+
+def _solution(seq=1, echo=1, d_mm=100, alpha01=0, status=0x20 | 0x80):
+    return Frame(seq=seq, cmd_id=CMD_ARM_SOLUTION,
+                 data=struct.pack("<hhBBhh", d_mm, alpha01, status, echo,
+                                  700, 100))
+
+
+# ---------- 应答只给该给的 ----------
+
+def test_plan_is_acked():
     m = MockMcu(route=[])
-    m.send(Frame(seq=3, cmd_id=CMD_TASK_PLAN, data=b"\x00" * 16))
-    acks = [f for f in _drain(m) if f.cmd_id == CMD_ACK]
+    m.send(_plan(seq=3))
+    acks = _ack(m)
     assert len(acks) == 1
-    assert acks[0].data == b"\x03", "应答的 data 必须是被确认帧的 seq"
+    assert acks[0].data == bytes((3, ACK_OK)), "data = (被确认的 seq, 结果)"
 
 
-def test_ack_seq_increments():
+def test_periodic_measurement_frames_are_not_acked():
+    """位姿与转盘是周期测量帧，每帧都回应答会让一半带宽变成纯应答。"""
     m = MockMcu(route=[])
-    for seq in (1, 2, 3):
-        m.send(Frame(seq=seq, cmd_id=CMD_TASK_PLAN, data=b"\x00" * 16))
-    acks = [f for f in _drain(m) if f.cmd_id == CMD_ACK]
-    assert [a.data[0] for a in acks] == [1, 2, 3]
+    m.send(Frame(1, CMD_POSE, b"\x00" * 9))
+    m.send(Frame(2, CMD_TURNTABLE, b"\x00" * 16))
+    m.send(Frame(3, CMD_REGION, b"\x02"))
+    assert _ack(m) == []
 
 
-def test_received_records_cmd_and_data():
+def test_arm_state_is_answered_by_solution_not_ack():
+    """0x0006 的应答是 0x0008（业务帧即应答），不应另回一个 ack。"""
     m = MockMcu(route=[])
-    m.send(Frame(seq=1, cmd_id=CMD_POSE, data=bytes(range(9))))
-    assert (CMD_POSE, bytes(range(9))) in m.received
+    m.request_arm()
+    frames = _drain(m)
+    assert [f.cmd_id for f in frames] == [CMD_ARM_STATE]
 
+
+def test_bad_plan_length_is_rejected():
+    m = MockMcu(route=[])
+    m.send(Frame(1, CMD_TASK_PLAN, b"\x00" * 8))
+    assert _ack(m)[0].data == bytes((1, ACK_FAILED))
+
+
+# ---------- 行驶与漂移 ----------
 
 def test_route_emits_region_hints_in_order():
     route = (REGION_MATERIAL, REGION_ROUGH, REGION_STAGING, REGION_START)
@@ -85,7 +116,6 @@ def test_drift_accumulates_with_distance():
     m.tick(0.0)
     m.tick(1.0)                     # speed 默认 1200mm/s → 1.2m
     assert abs(m.true_x - 1200.0) < 1e-6
-    # 推算值 = 真值 × (1 + 20/1000)
     assert abs(m.est_x - 1200.0 * 1.02) < 1e-6
     assert m.position_error_mm > 20.0
     assert abs(m.heading_error_deg - 1.2) < 1e-9
@@ -102,13 +132,12 @@ def test_apply_correction_replaces_not_adds():
     m.apply_correction(Pose(m.true_x, m.true_y, m.true_h))
     assert m.position_error_mm < 1e-9
     assert m.corrections == 1
-    # 再走一段，误差重新累积（说明是替换而非把偏移永久抹掉）
     m.tick(2.0)
     assert m.position_error_mm > 0.0
 
 
 def test_no_pose_reports_are_produced():
-    """v2.0.0 主控不再上报位姿：tick 只产出去向提示。"""
+    """主控不再上报位姿：tick 只产出去向提示。"""
     m = MockMcu(route=(REGION_ROUGH, REGION_STAGING),
                 leg_mm=10.0, speed_mm_s=1000.0)
     now = 0.0
@@ -119,41 +148,109 @@ def test_no_pose_reports_are_produced():
     assert ids <= {CMD_REGION}, f"主控不应产出位姿帧，实际 {ids}"
 
 
-def test_apply_pose_replaces_estimate_on_pose_frame():
-    """``apply_pose=True`` 时，收到 0x0003 就整体替换估计（真实电控行为）。"""
-    from src.algorithms.types import Pose
+def test_no_heartbeat_is_ever_produced():
+    m = MockMcu(route=(REGION_ROUGH,), leg_mm=10.0, speed_mm_s=1000.0)
+    now = 0.0
+    for _ in range(200):
+        m.tick(now)
+        now += 0.02
+    assert 0x0001 not in {f.cmd_id for f in _drain(m)}
 
+
+def test_apply_pose_replaces_estimate_on_pose_frame():
     m = MockMcu(route=(REGION_ROUGH,), leg_mm=1000.0, speed_mm_s=1000.0,
                 drift_mm_per_m=50.0, apply_pose=True)
     m.tick(0.0)
     m.tick(1.0)
     assert m.position_error_mm > 10.0
 
-    import struct
-    from src.core.protocol import CMD_POSE as POSE_CMD
     data = struct.pack("<hhh", int(m.true_x), int(m.true_y),
                        int(round(m.true_h * 10))) + bytes(3)
-    m.send(Frame(seq=1, cmd_id=POSE_CMD, data=data))
+    m.send(Frame(seq=1, cmd_id=CMD_POSE, data=data))
     assert m.corrections == 1
     assert m.position_error_mm < 2.0
 
 
 def test_apply_pose_off_by_default():
-    """默认不应用：单元测试要能显式区分「帧发出去了」与「误差归零了」。"""
-    from src.core.protocol import CMD_POSE as POSE_CMD
-
     m = MockMcu(route=())
-    m.send(Frame(seq=1, cmd_id=POSE_CMD, data=b"\x00" * 9))
+    m.send(Frame(seq=1, cmd_id=CMD_POSE, data=b"\x00" * 9))
     assert m.corrections == 0
 
 
 def test_malformed_pose_frame_is_ignored():
-    """长度不是 9 的位姿帧不得改动估计（真实电控也会丢弃）。"""
-    from src.core.protocol import CMD_POSE as POSE_CMD
-
     m = MockMcu(route=(), apply_pose=True)
-    m.send(Frame(seq=1, cmd_id=POSE_CMD, data=b"\x01\x02"))
+    m.send(Frame(seq=1, cmd_id=CMD_POSE, data=b"\x01\x02"))
     assert m.corrections == 0
+
+
+# ---------- 臂往返 ----------
+
+def test_request_arm_encodes_l_h_alpha():
+    m = MockMcu(route=(), arm_l_mm=580.0, arm_h_mm=310.0)
+    m.est_h = 27.5
+    seq = m.request_arm(target_id=2)
+    frame = _drain(m)[0]
+    assert frame.cmd_id == CMD_ARM_STATE and frame.seq == seq
+    l_mm, h_mm, alpha01, tid = struct.unpack("<HHHb", frame.data)
+    assert (l_mm, h_mm, tid) == (580, 310, 2)
+    assert alpha01 == 275, "α 以 0.1° 传，27.5° → 275"
+
+
+def test_arm_seq_increments_and_skips_zero():
+    m = MockMcu(route=[])
+    seqs = [m.request_arm() for _ in range(3)]
+    assert seqs == [1, 2, 3]
+
+
+def test_solution_is_executed_after_exec_time():
+    m = MockMcu(route=(), exec_s=0.2, use_done=False)
+    m.request_arm()
+    m.send(_solution(seq=1, echo=1, d_mm=120))
+    assert m.solutions[-1]["d_mm"] == 120
+    assert m.executed == [], "还没到执行时刻，不应记为已执行"
+
+    m.tick(0.0)
+    m.tick(0.3)
+    assert len(m.executed) == 1 and m.executed[0]["d_mm"] == 120
+
+
+def test_done_is_sent_after_execution():
+    m = MockMcu(route=(), exec_s=0.2)
+    m.request_arm()
+    m.send(_solution(seq=1, echo=1))
+    m.tick(0.0)
+    assert m.done_sent == [], "动作没做完不该回 done"
+    m.tick(0.3)
+    assert m.done_sent == [(1, ACK_OK)]
+
+
+def test_duplicate_solution_is_recognized_by_echo_seq():
+    """视觉等不到 done 而重发解算帧（seq 不变）时，只能补 done，不能再执行一次。
+
+    否则车会沿同一个 d 再走一遍——这是最危险的错误之一：不报错，只是位置错了。
+    """
+    m = MockMcu(route=(), exec_s=0.2)
+    m.request_arm()
+    m.send(_solution(seq=5, echo=1, d_mm=120))
+    m.tick(0.0)
+    m.tick(0.3)
+    assert len(m.executed) == 1
+
+    m.send(_solution(seq=5, echo=1, d_mm=120))     # 同 seq 重发
+    _drain(m)
+    assert len(m.executed) == 1, "重复请求不得重复执行"
+    assert m.done_sent[-1] == (5, ACK_DUPLICATE), "应回「重复请求」而不是成功"
+
+
+def test_unusable_solution_is_not_executed():
+    """够不着/没测到目标的结果不得执行，但仍然要回 done（否则视觉一直重发）。"""
+    m = MockMcu(route=(), exec_s=0.0)
+    m.request_arm()
+    m.send(_solution(seq=1, echo=1, status=0x01))   # OUTCOME_UNREACHABLE，无可用位
+    m.tick(0.0)
+    m.tick(0.1)
+    assert m.executed == [], "无解不该被执行"
+    assert m.done_sent, "但必须回 done，否则视觉会一直重发"
 
 
 # ---------- 航点行驶 ----------
@@ -170,7 +267,6 @@ def _run_route(wps, route, seconds=20.0, dt=0.02):
 
 
 def test_waypoints_visit_each_nominal_pose():
-    """按航点走时，每个区域到点时真值必须落在该航点的标称停位上。"""
     from src.algorithms.types import Pose
 
     wps = [Pose(0.0, 0.0, 0.0), Pose(600.0, 1600.0, 270.0),
@@ -183,7 +279,6 @@ def test_waypoints_visit_each_nominal_pose():
 
 
 def test_waypoints_keep_the_car_inside_the_field():
-    """没有航点时车会沿 +x 一直开到场外（x 冲到上万毫米），这正是要修的问题。"""
     from src.algorithms.types import Pose
 
     wps = [Pose(0.0, 0.0, 0.0), Pose(600.0, 1600.0, 270.0),
@@ -205,7 +300,6 @@ def test_waypoints_length_must_match_route():
 
 
 def test_waypoint_travel_is_also_time_driven():
-    """航点路径同样由时钟驱动：分多次 tick 与一次 tick 走到同一位置。"""
     from src.algorithms.types import Pose
 
     wps = [Pose(0.0, 0.0, 0.0), Pose(1200.0, 0.0, 0.0)]
@@ -228,5 +322,4 @@ def test_seriallink_structural_and_serial_import_is_lazy():
 
     assert hasattr(link, "SerialLink")
     assert hasattr(link, "McuLink")
-    # 模块级不 import pyserial（SerialLink.__init__ 内惰性导入）。
     assert "serial" not in sys.modules

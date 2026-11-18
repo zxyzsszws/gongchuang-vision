@@ -11,14 +11,24 @@ def test_load_default_yaml():
 
 
 def test_timing_keys_match_doc_table():
-    """表 1-14 的每个时序参数都必须在配置文件里有对应项，且取值一致。"""
+    """表 1-15 的每个时序参数都必须在配置文件里有对应项，且取值一致。"""
     cfg = load_config("config/default.yaml")
-    assert cfg_get(cfg, "timing.heartbeat_ms") == 500
-    assert cfg_get(cfg, "timing.link_timeout_s") == 2.0
     assert cfg_get(cfg, "timing.ack_timeout_ms") == 100
+    assert cfg_get(cfg, "timing.exec_timeout_ms") == 2000
     assert cfg_get(cfg, "timing.ack_retry") == 3
     assert cfg_get(cfg, "timing.pose_interval_ms") == 50
     assert cfg_get(cfg, "timing.turntable_interval_ms") == 50
+
+
+def test_heartbeat_keys_are_gone():
+    """V2.1.0 取消心跳：配置里不得残留 heartbeat_ms，也不该有断链超时。
+
+    断链是靠不出来的（电控事件驱动，停着作业时可以长时间不发帧），所以这条
+    配置项本身就不该存在——留着会诱导实现者去写一个必然误报的判断。
+    """
+    cfg = load_config("config/default.yaml")
+    for dead in ("heartbeat_ms", "link_timeout_s"):
+        assert dead not in cfg["timing"], f"配置里仍残留 {dead!r}"
 
 
 def test_retired_v1_keys_are_gone():
